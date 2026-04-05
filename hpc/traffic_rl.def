@@ -1,0 +1,29 @@
+BootStrap: docker
+From: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+
+%post
+    apt-get update && apt-get install -y \
+        software-properties-common \
+        wget git
+
+    # Install SUMO
+    add-apt-repository ppa:sumo/stable
+    apt-get update
+    apt-get install -y sumo sumo-tools
+
+    # Install Python packages
+    pip install --no-cache-dir \
+        sumo-rl \
+        stable-baselines3[extra] \
+        gymnasium \
+        pettingzoo \
+        wandb \
+        pandas numpy matplotlib psutil
+
+%environment
+    export SUMO_HOME="/usr/share/sumo"
+    export LIBSUMO_AS_TRACI=1
+    export PATH="$PATH:$SUMO_HOME/bin"
+
+%runscript
+    exec python "$@"
