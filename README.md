@@ -15,6 +15,26 @@ Tri kljucna krizisca, ki tvorijo trikotnik:
 - **Bleiweisova / Celovska / Tivolska** (severozahod)
 - **Tivolska / Dunajska / Slovenska** (severovzhod)
 
+## Podatki o obmocju
+
+Podatki o cestnem omrezju so pridobljeni iz OpenStreetMap (ODbL licenca).
+
+**Okvir (bounding box):**
+| Stran | Koordinata |
+|-------|------------|
+| Sever | 46.05840 |
+| Jug | 46.04540 |
+| Zahod | 14.49385 |
+| Vzhod | 14.50687 |
+
+**Vir:** [OpenStreetMap Export](https://www.openstreetmap.org/export)
+
+Podatke je mogoce ponovno prenesti z Overpass API:
+```bash
+wget -O data/osm/bleiweisova.osm \
+  "https://overpass-api.de/api/map?bbox=14.49385,46.04540,14.50687,46.05840"
+```
+
 ## Hiter zacetek
 
 ```bash
