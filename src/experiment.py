@@ -27,7 +27,8 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 
 from config import TS_IDS, TS_NAMES
-
+from agent_filter import AgentFilterWrapper
+from tls_programs import parse_original_programs, restore_non_target_programs
 
 RESULTS_DIR = "results"
 EXPERIMENTS_DIR = "results/experiments"
@@ -57,33 +58,124 @@ class TimeLimitCallback(BaseCallback):
         return True
 
 
-class ProgressCallback(BaseCallback):
-    """Print training progress periodically."""
-    def __init__(self, print_freq=5000, verbose=0):
+class TrainingLogCallback(BaseCallback):
+    """Log training metrics to CSV and print progress.
+
+    SuperSuit vec envs don't propagate SB3 Monitor info["episode"] stats,
+    so we track rewards/dones directly from the rollout locals.
+    Each "step" in the vec env = one agent's step. A done=True means that
+    agent's episode ended. We accumulate per-agent episode rewards.
+
+    Also tracks per-step reward mean for the training curve (useful even
+    before episodes complete).
+    """
+    def __init__(self, log_path, print_freq=5000, verbose=0):
         super().__init__(verbose)
+        self.log_path = log_path
         self.print_freq = print_freq
         self.start_time = None
+        self.episode_rewards = []
+        self.log_rows = []
+        # Running reward accumulator per sub-env in the vec env
+        self._running_rewards = None
+        # Per-step reward tracking (for training curves even without episodes)
+        self._step_rewards = []
+        self._step_log_rows = []
 
     def _on_training_start(self):
         self.start_time = time.time()
 
     def _on_step(self):
+        rewards = self.locals.get("rewards", np.array([]))
+        dones = self.locals.get("dones", np.array([]))
+
+        # Initialize running reward accumulators on first step
+        if self._running_rewards is None:
+            self._running_rewards = np.zeros(len(rewards), dtype=np.float64)
+
+        self._running_rewards += rewards
+
+        # Track per-step mean reward for training curves
+        step_mean_reward = float(np.mean(rewards))
+        self._step_rewards.append(step_mean_reward)
+
+        # Log per-step data every 100 steps (for training curves)
+        if self.num_timesteps % 100 == 0 and len(self._step_rewards) > 0:
+            recent_mean = float(np.mean(self._step_rewards[-100:]))
+            self._step_log_rows.append({
+                "timestep": self.num_timesteps,
+                "reward_step_mean": recent_mean,
+                "reward_step_sum": float(np.sum(self._step_rewards[-100:])),
+                "elapsed_s": time.time() - self.start_time,
+            })
+
+        # When a sub-env is done, record its episode reward and reset
+        for i, d in enumerate(dones):
+            if d:
+                ep_reward = float(self._running_rewards[i])
+                self.episode_rewards.append(ep_reward)
+                self.log_rows.append({
+                    "timestep": self.num_timesteps,
+                    "episode": len(self.episode_rewards),
+                    "reward": ep_reward,
+                    "elapsed_s": time.time() - self.start_time,
+                })
+                self._running_rewards[i] = 0.0
+
         if self.num_timesteps % self.print_freq == 0:
             elapsed = time.time() - self.start_time
             sps = self.num_timesteps / elapsed if elapsed > 0 else 0
+
+            # Show episode rewards if available, otherwise show step rewards
+            if self.episode_rewards:
+                recent = self.episode_rewards[-10:]
+                avg_r = np.mean(recent)
+                label = f"avg_ep_reward(last10)={avg_r:.1f}"
+            else:
+                recent = self._step_rewards[-500:] if self._step_rewards else [0]
+                avg_r = np.mean(recent)
+                label = f"avg_step_reward(last500)={avg_r:.2f}"
+
+            n_eps = len(self.episode_rewards)
             print(f"    Step {self.num_timesteps}: "
-                  f"elapsed={elapsed/60:.1f}min, {sps:.0f} steps/s")
+                  f"{label}, {n_eps} episodes, "
+                  f"{sps:.0f} steps/s, {elapsed/60:.1f}min")
         return True
+
+    def _on_training_end(self):
+        # Save episode-level log
+        if self.log_rows:
+            df = pd.DataFrame(self.log_rows)
+            df.to_csv(self.log_path, index=False)
+            print(f"  Training log saved: {self.log_path} "
+                  f"({len(self.log_rows)} episodes)")
+
+        # Save step-level log for training curves
+        if self._step_log_rows:
+            step_log_path = self.log_path.replace(
+                "training_log.csv", "training_steps.csv"
+            )
+            df_steps = pd.DataFrame(self._step_log_rows)
+            df_steps.to_csv(step_log_path, index=False)
+            print(f"  Step-level training log saved: {step_log_path} "
+                  f"({len(self._step_log_rows)} data points)")
 
 
 # ── Environment creation ──
 
 def make_train_env(net_file, route_file, num_seconds):
     """
-    Create a PettingZoo parallel env → SuperSuit vec env for SB3.
-    This is the standard IPPO approach: parameter sharing across agents.
-    Each agent (traffic signal) is treated as a separate sub-env in the
-    vectorized environment. PPO trains a shared policy that works for all.
+    Create a PettingZoo parallel env → AgentFilter → SuperSuit vec env.
+
+    Key insight: without filtering, SuperSuit + PPO trains one shared
+    policy for ALL 37 traffic lights. This is terrible because:
+    1. A single policy can't handle 37 structurally different intersections
+    2. RL-controlling the 32 non-target intersections makes them worse
+    3. Worse non-target traffic cascades into the 5 target intersections
+
+    With AgentFilterWrapper, only the 5 target TLS are RL agents.
+    The other 32 keep their real signal programs (default action=0).
+    This means PPO only needs to learn a policy for 5 similar intersections.
     """
     env = sumo_rl.parallel_env(
         net_file=net_file,
@@ -93,10 +185,24 @@ def make_train_env(net_file, route_file, num_seconds):
         reward_fn="queue",
         delta_time=5,
         yellow_time=2,
-        min_green=5,
-        max_green=50,
+        min_green=10,
+        max_green=90,
         sumo_warnings=False,
     )
+    # Patch: sumo-rl 1.4.5 doesn't set render_mode, but SuperSuit expects it
+    if not hasattr(env.unwrapped, "render_mode"):
+        env.unwrapped.render_mode = None
+
+    # CRITICAL: Filter to only target intersections BEFORE SuperSuit
+    # Non-target TLS run their original SUMO signal programs (restored
+    # from net.xml after sumo-rl replaces them during env creation)
+    env = AgentFilterWrapper(
+        env, target_agents=TS_IDS, net_file=net_file, default_action=0
+    )
+
+    # Pad observations so all 5 target agents have the same obs space size
+    env = ss.pad_observations_v0(env)
+    env = ss.pad_action_space_v0(env)
     # PettingZoo parallel → SB3 VecEnv (each agent = sub-environment)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = ss.concat_vec_envs_v1(env, 1, base_class="stable_baselines3")
@@ -113,8 +219,8 @@ def make_eval_env(net_file, route_file, num_seconds, fixed_ts=False):
         reward_fn="queue",
         delta_time=5,
         yellow_time=2,
-        min_green=5,
-        max_green=50,
+        min_green=10,
+        max_green=90,
         single_agent=False,
         fixed_ts=fixed_ts,
         sumo_warnings=False,
@@ -148,14 +254,36 @@ def run_baseline(net_file, route_file, num_seconds):
     return rewards, steps
 
 
+def pad_obs(obs, target_size):
+    """Zero-pad observation to match the padded training obs space."""
+    if len(obs) >= target_size:
+        return obs[:target_size]
+    padded = np.zeros(target_size, dtype=np.float32)
+    padded[:len(obs)] = obs
+    return padded
+
+
 def run_evaluation(net_file, route_file, num_seconds, model):
     """
-    Evaluate trained PPO model on all traffic signals.
-    The shared policy is used for ALL intersections (parameter sharing).
+    Evaluate trained PPO model on the 5 target traffic signals.
+    Non-target TLS run their original SUMO signal programs, restored
+    from the .net.xml file after sumo-rl replaces them.
+
+    This ensures a fair comparison with the fixed_ts=True baseline:
+    non-target traffic flows identically, and only the 5 target TLS
+    differ (RL policy vs. original program).
     """
     env = make_eval_env(net_file, route_file, num_seconds, fixed_ts=False)
     observations = env.reset()
 
+    # Restore original SUMO programs for non-target TLS
+    original_programs = parse_original_programs(net_file)
+    restore_non_target_programs(env, TS_IDS, original_programs)
+
+    # Get the padded obs size from the trained model
+    obs_size = model.observation_space.shape[0]
+
+    target_set = set(TS_IDS)
     rewards = {ts_id: 0.0 for ts_id in TS_IDS}
     done = False
     steps = 0
@@ -163,9 +291,17 @@ def run_evaluation(net_file, route_file, num_seconds, model):
     while not done:
         actions = {}
         for ts_id in env.ts_ids:
-            obs = observations[ts_id]
-            action, _ = model.predict(obs, deterministic=True)
-            actions[ts_id] = int(action)
+            if ts_id in target_set:
+                # Target intersection: use RL model
+                obs = pad_obs(observations[ts_id], obs_size)
+                action, _ = model.predict(obs, deterministic=True)
+                ts = env.traffic_signals[ts_id]
+                actual_n_actions = ts.action_space.n
+                actions[ts_id] = int(action) % actual_n_actions
+            else:
+                # Non-target: action is ignored (set_next_phase is patched)
+                # SUMO runs the restored original program
+                actions[ts_id] = 0
 
         observations, reward_dict, done_dict, info = env.step(actions)
         done = done_dict["__all__"]
@@ -193,22 +329,27 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     print(f"  Observation space: {env.observation_space}")
     print(f"  Action space: {env.action_space}")
 
+    # n_steps=720: exactly 1 full episode per rollout
+    # (3600s simulation / 5s delta_time = 720 SUMO steps per episode)
+    # batch_size=180: divides evenly into 720×5=3600 transitions (20 batches)
     model = PPO(
         "MlpPolicy",
         env,
-        learning_rate=3e-4,
-        n_steps=2048,
-        batch_size=128,
+        learning_rate=1e-3,
+        n_steps=720,
+        batch_size=180,
         n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
-        ent_coef=0.01,
+        ent_coef=0.05,
+        clip_range=0.2,
         verbose=0,
         tensorboard_log=os.path.join(run_dir, "tb_logs"),
     )
 
     # Callbacks
-    callbacks = [ProgressCallback(print_freq=5000)]
+    log_path = os.path.join(run_dir, "training_log.csv")
+    callbacks = [TrainingLogCallback(log_path, print_freq=5000)]
     if max_seconds:
         callbacks.append(TimeLimitCallback(max_seconds))
 
@@ -293,12 +434,22 @@ def compare_experiments():
 # ── Main ──
 
 def main():
-    parser = argparse.ArgumentParser(description="Run reproducible experiment")
+    parser = argparse.ArgumentParser(
+        description="Run reproducible experiment",
+        epilog=(
+            "Timestep math: 1 episode = num_seconds/delta_time * num_agents "
+            "= 3600/5 * 5 = 3600 SB3 timesteps. "
+            "Use --episode_count for human-readable episode counts."
+        ),
+    )
     parser.add_argument("--net_file", type=str,
                         default="data/networks/ljubljana.net.xml")
     parser.add_argument("--route_file", type=str,
                         default="data/routes/routes.rou.xml")
-    parser.add_argument("--total_timesteps", type=int, default=100_000)
+    parser.add_argument("--total_timesteps", type=int, default=None,
+                        help="Total SB3 timesteps (1 episode = 3600 steps)")
+    parser.add_argument("--episode_count", type=int, default=None,
+                        help="Number of full episodes to train (converted to timesteps)")
     parser.add_argument("--max_hours", type=float, default=None)
     parser.add_argument("--num_seconds", type=int, default=3600)
     parser.add_argument("--tag", type=str, default="")
@@ -308,6 +459,21 @@ def main():
     if args.compare_only:
         compare_experiments()
         return
+
+    # Convert episode_count to timesteps if provided
+    # 1 episode = num_seconds / delta_time * num_agents
+    #           = 3600 / 5 * 5 = 3600 SB3 timesteps
+    NUM_AGENTS = len(TS_IDS)
+    DELTA_TIME = 5
+    steps_per_episode = (args.num_seconds // DELTA_TIME) * NUM_AGENTS
+
+    if args.episode_count is not None:
+        args.total_timesteps = args.episode_count * steps_per_episode
+        print(f"  Episode count: {args.episode_count} episodes "
+              f"= {args.total_timesteps} timesteps "
+              f"({steps_per_episode} per episode)")
+    elif args.total_timesteps is None:
+        args.total_timesteps = 100_000  # default
 
     max_seconds = args.max_hours * 3600 if args.max_hours else None
     run_id = get_run_id(args.tag)
@@ -331,11 +497,13 @@ def main():
         "ts_names": TS_NAMES,
         "approach": "PPO with parameter sharing (SuperSuit vec env)",
         "hyperparams": {
-            "lr": 3e-4, "n_steps": 2048, "batch_size": 128,
+            "lr": 1e-3, "n_steps": 720, "batch_size": 180,
             "n_epochs": 10, "gamma": 0.99, "gae_lambda": 0.95,
-            "ent_coef": 0.01, "delta_time": 5, "yellow_time": 2,
-            "min_green": 5, "max_green": 50,
+            "ent_coef": 0.05, "clip_range": 0.2,
+            "delta_time": 5, "yellow_time": 2,
+            "min_green": 10, "max_green": 90,
         },
+        "agent_filter": "5 target TLS only (other 32 run fixed-time)",
     }
     with open(os.path.join(run_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)

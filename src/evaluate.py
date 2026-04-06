@@ -11,11 +11,13 @@ Usage:
 
 import argparse
 import os
+import numpy as np
 import pandas as pd
 import sumo_rl
 from stable_baselines3 import PPO
 
 from config import TS_IDS, TS_NAMES
+from tls_programs import parse_original_programs, restore_non_target_programs
 
 
 def run_episode(net_file, route_file, model=None, use_gui=False,
@@ -27,6 +29,10 @@ def run_episode(net_file, route_file, model=None, use_gui=False,
         use_gui=use_gui,
         num_seconds=num_seconds,
         reward_fn="queue",
+        delta_time=5,
+        yellow_time=2,
+        min_green=10,
+        max_green=90,
         single_agent=False,
         fixed_ts=fixed_ts,
         sumo_warnings=False,
@@ -36,14 +42,36 @@ def run_episode(net_file, route_file, model=None, use_gui=False,
     rewards = {ts_id: 0.0 for ts_id in TS_IDS}
     done = False
 
+    # Get padded sizes from model if available
+    obs_size = model.observation_space.shape[0] if model else None
+    n_actions = model.action_space.n if model else None
+
+    target_set = set(TS_IDS)
+
+    # Restore original SUMO programs for non-target TLS (when not baseline)
+    if not fixed_ts and model is not None:
+        original_programs = parse_original_programs(net_file)
+        restore_non_target_programs(env, TS_IDS, original_programs)
+
     while not done:
         actions = {}
         for ts_id in env.ts_ids:
-            if model is not None:
+            if model is not None and ts_id in target_set:
+                # Target intersection: use RL model
                 obs = observations[ts_id]
+                # Pad observation to match training space
+                if len(obs) < obs_size:
+                    padded = np.zeros(obs_size, dtype=np.float32)
+                    padded[:len(obs)] = obs
+                    obs = padded
                 action, _ = model.predict(obs, deterministic=True)
-                actions[ts_id] = int(action)
+                # Clip action to valid range for this intersection
+                actual_n = env.traffic_signals[ts_id].action_space.n
+                actions[ts_id] = int(action) % actual_n
             else:
+                # Non-target or baseline: action ignored by patched TLS
+                # (SUMO runs original program); for fixed_ts baseline,
+                # SUMO skips action processing entirely
                 actions[ts_id] = 0
 
         observations, reward_dict, done_dict, info = env.step(actions)

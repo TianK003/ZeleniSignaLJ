@@ -19,6 +19,9 @@ import supersuit as ss
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 
+from config import TS_IDS
+from agent_filter import AgentFilterWrapper
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train PPO for traffic signal control")
@@ -47,10 +50,18 @@ def main():
         reward_fn="queue",
         delta_time=5,
         yellow_time=2,
-        min_green=5,
-        max_green=50,
+        min_green=10,
+        max_green=90,
         sumo_warnings=False,
     )
+    if not hasattr(env.unwrapped, "render_mode"):
+        env.unwrapped.render_mode = None
+    # Filter to 5 target intersections only — others run original SUMO programs
+    env = AgentFilterWrapper(
+        env, target_agents=TS_IDS, net_file=args.net_file, default_action=0
+    )
+    env = ss.pad_observations_v0(env)
+    env = ss.pad_action_space_v0(env)
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = ss.concat_vec_envs_v1(env, 1, base_class="stable_baselines3")
 
@@ -66,13 +77,14 @@ def main():
     model = PPO(
         "MlpPolicy",
         env,
-        learning_rate=3e-4,
-        n_steps=2048,
-        batch_size=128,
+        learning_rate=1e-3,
+        n_steps=720,        # 1 full episode per rollout (3600s / 5s)
+        batch_size=180,     # divides evenly into 720*5=3600 transitions
         n_epochs=10,
         gamma=0.99,
         gae_lambda=0.95,
-        ent_coef=0.01,
+        ent_coef=0.05,
+        clip_range=0.2,
         verbose=1,
         tensorboard_log=args.log_dir,
     )
