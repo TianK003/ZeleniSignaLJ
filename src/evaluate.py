@@ -2,108 +2,119 @@
 Zeleni SignaLJ - Evaluation Script
 ====================================
 Evaluate a trained PPO model against the fixed-time baseline.
-Outputs KPI comparison and optionally records a demo via sumo-gui.
 
 Usage:
-    python src/evaluate.py                          # headless eval
-    python src/evaluate.py --gui                    # with SUMO GUI (for demo recording)
-    python src/evaluate.py --model models/ppo_ljubljana_final.zip
+    python src/evaluate.py
+    python src/evaluate.py --gui
+    python src/evaluate.py --model results/experiments/XXXXX/ppo_shared_policy.zip
 """
 
 import argparse
 import os
-import numpy as np
 import pandas as pd
 import sumo_rl
 from stable_baselines3 import PPO
 
+from config import TS_IDS, TS_NAMES
+
 
 def run_episode(net_file, route_file, model=None, use_gui=False,
-                num_seconds=3600, out_csv=None):
-    """Run one episode. If model=None, runs fixed-time baseline."""
+                num_seconds=3600, fixed_ts=False):
+    """Run one episode. model=None with fixed_ts=True → real baseline."""
     env = sumo_rl.SumoEnvironment(
         net_file=net_file,
         route_file=route_file,
         use_gui=use_gui,
         num_seconds=num_seconds,
-        single_agent=True,
         reward_fn="queue",
-        out_csv_name=out_csv,
+        single_agent=False,
+        fixed_ts=fixed_ts,
+        sumo_warnings=False,
     )
 
-    obs, info = env.reset()
+    observations = env.reset()
+    rewards = {ts_id: 0.0 for ts_id in TS_IDS}
     done = False
-    total_reward = 0
-    step_count = 0
 
     while not done:
-        if model is not None:
-            action, _ = model.predict(obs, deterministic=True)
-        else:
-            action = 0  # Keep current phase = fixed-time baseline
-        obs, reward, terminated, truncated, info = env.step(action)
-        total_reward += reward
-        step_count += 1
-        done = terminated or truncated
+        actions = {}
+        for ts_id in env.ts_ids:
+            if model is not None:
+                obs = observations[ts_id]
+                action, _ = model.predict(obs, deterministic=True)
+                actions[ts_id] = int(action)
+            else:
+                actions[ts_id] = 0
+
+        observations, reward_dict, done_dict, info = env.step(actions)
+        done = done_dict["__all__"]
+
+        for ts_id in TS_IDS:
+            if ts_id in reward_dict:
+                rewards[ts_id] += reward_dict[ts_id]
 
     env.close()
-    return total_reward, step_count
+    return rewards
 
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate traffic signal control")
-    parser.add_argument("--model", type=str,
-                        default="models/ppo_ljubljana_final.zip",
-                        help="Path to trained model")
+    parser.add_argument("--model", type=str, default="models/ppo_traffic_final.zip")
     parser.add_argument("--net_file", type=str,
                         default="data/networks/ljubljana.net.xml")
     parser.add_argument("--route_file", type=str,
                         default="data/routes/routes.rou.xml")
-    parser.add_argument("--gui", action="store_true",
-                        help="Run with SUMO GUI for visual demo")
+    parser.add_argument("--gui", action="store_true")
     parser.add_argument("--num_seconds", type=int, default=3600)
     args = parser.parse_args()
 
     os.makedirs("results", exist_ok=True)
 
-    # ── Run baseline (fixed-time) ──
-    print("Running fixed-time baseline...")
-    baseline_reward, baseline_steps = run_episode(
+    # Baseline (real signal programs)
+    print("Running fixed-time baseline (real signal programs)...")
+    baseline_rewards = run_episode(
         args.net_file, args.route_file,
-        model=None, use_gui=False,
-        num_seconds=args.num_seconds,
-        out_csv="results/baseline",
+        model=None, num_seconds=args.num_seconds, fixed_ts=True,
     )
-    print(f"  Baseline: reward={baseline_reward:.1f}, steps={baseline_steps}")
+    print(f"  Baseline total reward: {sum(baseline_rewards.values()):.1f}")
 
-    # ── Run trained RL agent ──
-    print(f"Loading model from {args.model}...")
+    # RL model
+    print(f"\nLoading model: {args.model}")
     model = PPO.load(args.model)
+
     print("Running RL agent...")
-    rl_reward, rl_steps = run_episode(
+    rl_rewards = run_episode(
         args.net_file, args.route_file,
-        model=model, use_gui=args.gui,
-        num_seconds=args.num_seconds,
-        out_csv="results/rl_agent",
+        model=model, use_gui=args.gui, num_seconds=args.num_seconds,
     )
-    print(f"  RL Agent: reward={rl_reward:.1f}, steps={rl_steps}")
 
-    # ── Compare ──
-    improvement = ((rl_reward - baseline_reward) / abs(baseline_reward)) * 100
-    print(f"\n{'='*50}")
-    print(f"  Baseline reward:  {baseline_reward:.1f}")
-    print(f"  RL agent reward:  {rl_reward:.1f}")
-    print(f"  Improvement:      {improvement:+.1f}%")
-    print(f"{'='*50}")
+    # Comparison
+    print(f"\n{'='*70}")
+    print(f"{'Intersection':<40} {'Baseline':>10} {'RL':>10} {'Δ%':>8}")
+    print(f"{'-'*70}")
 
-    # Save summary
-    summary = pd.DataFrame({
-        "metric": ["total_reward", "steps", "improvement_pct"],
-        "baseline": [baseline_reward, baseline_steps, 0],
-        "rl_agent": [rl_reward, rl_steps, improvement],
-    })
-    summary.to_csv("results/comparison_summary.csv", index=False)
-    print("Results saved to results/comparison_summary.csv")
+    rows = []
+    for ts_id in TS_IDS:
+        name = TS_NAMES.get(ts_id, ts_id)[:38]
+        bl = baseline_rewards.get(ts_id, 0)
+        rl = rl_rewards.get(ts_id, 0)
+        pct = ((rl - bl) / abs(bl) * 100) if bl != 0 else 0
+        print(f"  {name:<38} {bl:>10.1f} {rl:>10.1f} {pct:>+7.1f}%")
+        rows.append({
+            "intersection": name, "tls_id": ts_id,
+            "baseline_reward": bl, "rl_reward": rl,
+            "improvement_pct": pct,
+        })
+
+    bl_total = sum(baseline_rewards.values())
+    rl_total = sum(rl_rewards.values())
+    total_pct = ((rl_total - bl_total) / abs(bl_total) * 100) if bl_total != 0 else 0
+    print(f"{'-'*70}")
+    print(f"  {'TOTAL':<38} {bl_total:>10.1f} {rl_total:>10.1f} {total_pct:>+7.1f}%")
+    print(f"{'='*70}")
+
+    pd.DataFrame(rows).to_csv("results/comparison_summary.csv", index=False)
+    print("\nSaved to results/comparison_summary.csv")
 
 
 if __name__ == "__main__":
