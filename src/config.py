@@ -40,6 +40,7 @@ YELLOW_TIME = 2       # Yellow phase duration between green switches
 MIN_GREEN = 10        # Minimum green phase before switching allowed
 MAX_GREEN = 90        # Maximum green phase before forced re-decision
 REWARD_FN = "queue"   # Reward = negative halted vehicles per step
+TOTAL_DAILY_CARS = 400000 # Configurable number of total cars in a simulated 24h day
 
 # ══════════════════════════════════════════
 # PPO hyperparameters

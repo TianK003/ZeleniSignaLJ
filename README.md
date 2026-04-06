@@ -65,6 +65,9 @@ python src/generate_demand.py --profile uniform --duration 3600 --peak_vph 800
 # 5. Ucenje (lokalno, 50 epizod ~ 4 min)
 python src/experiment.py --episode_count 50 --tag local_50ep
 
+# 5b. Napredno ucenje po celem dnevu (Curriculum)
+python src/experiment.py --episode_count 50 --curriculum --tag napredno_ucenje
+
 # 6. Primerjava rezultatov in nadzorna plosca
 python src/experiment.py --compare_only
 python src/dashboard.py
@@ -97,6 +100,12 @@ python src/evaluate.py --model results/experiments/XXXXX/ppo_shared_policy.zip
 | `gae_lambda` | 0.95 | GAE glajenje med pristranskostjo in varianco |
 | `ent_coef` | 0.05 | Entropijski bonus — spodbuja raziskovanje |
 | `clip_range` | 0.2 | PPO obrezovanje: omejuje spremembo politike na posodobitev |
+
+## Napredno ucenje (Curriculum Learning)
+
+Z uporabo zastavice `--curriculum` lahko pozenemo pametnejsi nacin ucenja. Algoritem nakljucno "skace" po razlicnih urah dneva. Sistem samodejno izracuna, koliko avtomobilov je na cesti ob izbrani uri (8.00 in 16.00 imata vrhunec, ponoci so ceste prazne, skupaj v dnevu prevozi 400.000 avtov - nastavljivo v `config.py`). 
+
+Model nato vsakic izvede natanko 1 uro simulacije in se uci na tem delcku dneva. Ker tako ves cas vidi razlicne scenarije in sproti osvezuje krizisca, se nauci ucinkovitih splosnih pravil in ne obvisi v trajnem zastoju.
 
 ## Razumevanje korakov (timesteps)
 

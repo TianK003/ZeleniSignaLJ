@@ -24,6 +24,7 @@ import subprocess
 import os
 import sys
 import numpy as np
+import tempfile
 
 
 def gaussian_rate(t, peak_time, sigma, peak_rate, base_rate):
@@ -117,7 +118,8 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
             t_min = begin / 60
             print(f"  {t_min:>7.0f}min  {rate * 3600:>12.0f}  {n_vehicles:>10d}")
 
-        tmp_trips = f"/tmp/trips_bin_{i}.trips.xml"
+        tmp_dir = tempfile.gettempdir()
+        tmp_trips = os.path.join(tmp_dir, f"trips_bin_{i}.trips.xml")
         all_trips_files.append(tmp_trips)
 
         cmd = [

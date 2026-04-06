@@ -56,3 +56,6 @@ data/osm/*.pbf
 .env
 *.key
 wandb-metadata.json
+
+results/*
+data/routes/*
