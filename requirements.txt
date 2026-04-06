@@ -9,6 +9,7 @@ pettingzoo>=1.24.0
 
 # ── SUMO-RL bridge ──
 sumo-rl>=1.4.5
+supersuit>=3.9.0
 
 # ── Monitoring ──
 wandb>=0.16.0
