@@ -12,14 +12,12 @@ Agenti s spodbujevalnim ucenjem (neodvisni PPO), uceni v simulatorju SUMO, za op
 
 Zaradi kompleksnosti optimizacije vecjega obmocja smo se osredoticili na optimizacijo le 5 krizisc. Zelimo narediti prototip, ki dokaze, da se promet lahko optimizira, seveda bi pa v realnosti naredili optimizacijo na nivoju obmocja.
 
-Tri kljucna krizisca, ki tvorijo trikotnik:
-- **Bleiweisova / Trzaska / Askerceva** (jugozahod)
-- **Bleiweisova / Celovska / Tivolska** (severozahod)
-- **Tivolska / Dunajska / Slovenska** (severovzhod)
-
-Zraven smo dodali se 2 manjsi krizisci, ki mocno vplivata na ta tri kljucna krizisca:
-- **Slovenska/ Gosposvetska / Dalmatinova**
-- **Askerceva / Presernova / Groharjeva**
+Opazujemo sledeca krizisca:
+1. **Tivolska / Slovenska / Dunajska / Trg OF**
+2. **Bleiweisova / Tivolska / Celovska / Gosposvetska**
+3. **Slovenska / Gosposvetska / Dalmatinova**
+4. **Askerceva / Presernova / Groharjeva**
+5. **Askerceva / Zoisova / Slovenska / Barjanska**
 
 ![Slika izbranih krizisc](./data/media/Observed_intersections.png)
 
