@@ -19,6 +19,8 @@ if mode == "baseline":
         
 elif mode == "evaluate":
     model_path = sys.argv[6]
+    import experiment
+    experiment.CURRENT_HOUR = float(sys.argv[7])
     model = PPO.load(model_path)
     rewards, _ = run_evaluation(net_file, route_file, num_seconds, model)
     with open(out_json, "w") as f: 

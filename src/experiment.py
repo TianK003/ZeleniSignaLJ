@@ -29,7 +29,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 from config import (
     TS_IDS, TS_NAMES, NUM_AGENTS, STEPS_PER_EPISODE,
     NUM_SECONDS, DELTA_TIME, YELLOW_TIME, MIN_GREEN, MAX_GREEN, REWARD_FN,
-    TOTAL_DAILY_CARS,
+    TOTAL_DAILY_CARS, WARMUP_SECONDS,
     LEARNING_RATE, N_STEPS, BATCH_SIZE, N_EPOCHS,
     GAMMA, GAE_LAMBDA, ENT_COEF, CLIP_RANGE,
 )
@@ -38,6 +38,40 @@ from tls_programs import parse_original_programs, restore_non_target_programs
 from demand_math import get_vph
 from generate_demand import write_demand_xml
 import random
+
+from sumo_rl.environment.observations import ObservationFunction
+from gymnasium import spaces
+
+CURRENT_HOUR = 0.0
+CURRENT_VPH = 1000.0
+
+class TimeEncodedObservationFunction(ObservationFunction):
+    """
+    Extends the default observation function with cyclically encoded time:
+    sin(t) and cos(t), giving the AI a smooth perception of the time of day.
+    """
+    def __init__(self, ts):
+        super().__init__(ts)
+
+    def __call__(self) -> np.ndarray:
+        phase_id = [1 if self.ts.green_phase == i else 0 for i in range(self.ts.num_green_phases)]
+        min_green = [0 if self.ts.time_since_last_phase_change < self.ts.min_green + self.ts.yellow_time else 1]
+        density = self.ts.get_lanes_density()
+        queue = self.ts.get_lanes_queue()
+        
+        global CURRENT_HOUR
+        time_seconds = CURRENT_HOUR * 3600.0 + self.ts.env.sim_step
+        sin_time = float(np.sin(2 * np.pi * time_seconds / 86400.0))
+        cos_time = float(np.cos(2 * np.pi * time_seconds / 86400.0))
+        
+        observation = np.array(phase_id + min_green + density + queue + [sin_time, cos_time], dtype=np.float32)
+        return observation
+
+    def observation_space(self) -> spaces.Box:
+        base_size = self.ts.num_green_phases + 1 + 2 * len(self.ts.lanes)
+        low = np.concatenate([np.zeros(base_size, dtype=np.float32), [-1.0, -1.0]])
+        high = np.concatenate([np.ones(base_size, dtype=np.float32), [1.0, 1.0]])
+        return spaces.Box(low=low, high=high)
 
 RESULTS_DIR = "results"
 EXPERIMENTS_DIR = "results/experiments"
@@ -197,10 +231,13 @@ def make_train_env(net_file, route_file, num_seconds):
         max_green=MAX_GREEN,
         sumo_warnings=False,
         additional_sumo_cmd="--ignore-route-errors",
+        observation_class=TimeEncodedObservationFunction,
     )
     # Patch: sumo-rl 1.4.5 doesn't set render_mode, but SuperSuit expects it
     if not hasattr(env.unwrapped, "render_mode"):
         env.unwrapped.render_mode = None
+        
+    env.unwrapped.warmup_seconds = WARMUP_SECONDS
 
     # CRITICAL: Filter to only target intersections BEFORE SuperSuit
     # Non-target TLS run their original SUMO signal programs (restored
@@ -234,6 +271,7 @@ def make_eval_env(net_file, route_file, num_seconds, fixed_ts=False):
         fixed_ts=fixed_ts,
         sumo_warnings=False,
         additional_sumo_cmd="--ignore-route-errors",
+        observation_class=TimeEncodedObservationFunction,
     )
 
 
@@ -389,9 +427,13 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
         if episodes == 0: episodes = 1
             
         for ep in range(episodes):
+            global CURRENT_HOUR, CURRENT_VPH
+            
             if ep > 0:
                 hour_of_day = random.uniform(0, 24)
+                CURRENT_HOUR = hour_of_day
                 vph = get_vph(hour_of_day, TOTAL_DAILY_CARS)
+                CURRENT_VPH = vph
                 vps = vph / 3600.0
                 
                 print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
@@ -399,6 +441,8 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                 
                 write_demand_xml([(0, num_seconds, vps)], net_file, tmp_trips, train_route_file)
             else:
+                CURRENT_HOUR = initial_hour
+                CURRENT_VPH = initial_vph
                 print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
                 print(f"     Random Time of day: {initial_hour:.1f}h, Traffic Flow: {initial_vph:.0f} cars/hour")
             
@@ -430,7 +474,7 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                 # 2. RL Evaluation in Subprocess (Safe for Libsumo)
                 tmp_model = os.path.join(run_dir, "tmp_eval_model")
                 model.save(tmp_model)
-                subprocess.run([sys.executable, "src/eval_helper.py", "evaluate", net_file, train_route_file, str(num_seconds), tmp_json, tmp_model+".zip"])
+                subprocess.run([sys.executable, "src/eval_helper.py", "evaluate", net_file, train_route_file, str(num_seconds), tmp_json, tmp_model+".zip", str(h_val)])
                 with open(tmp_json, "r") as f:
                     rl_r = json.load(f)
                 rl_tot = sum(rl_r.values())

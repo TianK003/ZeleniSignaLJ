@@ -34,7 +34,9 @@ TS_NAMES = {
 # ══════════════════════════════════════════
 # SUMO simulation parameters
 # ══════════════════════════════════════════
-NUM_SECONDS = 3600    # Episode duration (1 hour of simulated traffic)
+WARMUP_SECONDS = 600  # 10 minutes of mechanical OSM simulation before RL takes over
+RL_SECONDS = 3600     # Episode duration (1 hour of RL-controlled traffic)
+NUM_SECONDS = RL_SECONDS + WARMUP_SECONDS    # Total simulation time
 DELTA_TIME = 5        # Seconds between agent decisions
 YELLOW_TIME = 2       # Yellow phase duration between green switches
 MIN_GREEN = 10        # Minimum green phase before switching allowed
@@ -61,4 +63,4 @@ CLIP_RANGE = 0.2      # PPO clipping: limits policy change per update
 # Derived constants (do not edit)
 # ══════════════════════════════════════════
 NUM_AGENTS = len(TS_IDS)
-STEPS_PER_EPISODE = (NUM_SECONDS // DELTA_TIME) * NUM_AGENTS  # 3600
+STEPS_PER_EPISODE = (RL_SECONDS // DELTA_TIME) * NUM_AGENTS

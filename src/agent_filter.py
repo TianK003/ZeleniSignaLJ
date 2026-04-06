@@ -89,6 +89,51 @@ class AgentFilterWrapper(ParallelEnv):
         self.agents = [a for a in self.target_agents
                        if a in self.env.agents]
 
+        warmup_seconds = getattr(self.env.unwrapped, "warmup_seconds", 0)
+        sumo = getattr(self.env.unwrapped, "sumo", None)
+        
+        if warmup_seconds > 0 and sumo is not None:
+            traffic_signals = getattr(self.env.unwrapped, 'traffic_signals', {})
+            # Temporarily set ALL logic to OSM original programs so cars can spawn and flow naturally
+            for ts_id, ts_obj in traffic_signals.items():
+                if ts_id in self._original_programs:
+                    prog = self._original_programs[ts_id]
+                    try:
+                        phases = [sumo.trafficlight.Phase(p["duration"], p["state"]) for p in prog["phases"]]
+                        programs = sumo.trafficlight.getAllProgramLogics(ts_id)
+                        logic = programs[0]
+                        logic.type = 0
+                        logic.phases = phases
+                        sumo.trafficlight.setProgramLogic(ts_id, logic)
+                    except Exception:
+                        pass
+                        
+            # Run SUMO mechanically purely for warmup_seconds (no RL updates)
+            target_time = sumo.simulation.getTime() + warmup_seconds
+            while sumo.simulation.getTime() < target_time:
+                sumo.simulationStep()
+                
+            # After warmup, we must re-assert sumo-rl's TrafficSignal logic for the TARGET agents
+            for ts_id in self.target_agents:
+                if ts_id not in traffic_signals: continue
+                ts_obj = traffic_signals[ts_id]
+                try:
+                    logic = sumo.trafficlight.getAllProgramLogics(ts_id)[0]
+                    logic.type = 0
+                    logic.phases = ts_obj.all_phases
+                    sumo.trafficlight.setProgramLogic(ts_id, logic)
+                    sumo.trafficlight.setRedYellowGreenState(ts_id, ts_obj.all_phases[0].state)
+                    # Resync ts_obj timers
+                    ts_obj.green_phase = 0
+                    ts_obj.is_yellow = False
+                    ts_obj.time_since_last_phase_change = 0
+                    ts_obj.next_action_time = sumo.simulation.getTime()
+                except Exception:
+                    pass
+            
+            # Since simulation advanced, we must recalculate the initial observations for target agents!
+            observations = {a: traffic_signals[a].compute_observation() for a in self.agents}
+
         # Restore original SUMO programs for non-target TLS
         # This must happen AFTER reset (which starts SUMO and creates
         # TrafficSignal objects that replace original programs)
@@ -135,7 +180,15 @@ class AgentFilterWrapper(ParallelEnv):
                        if a in self.env.agents]
 
         f_obs = {a: observations[a] for a in self.agents if a in observations}
-        f_rew = {a: rewards.get(a, 0.0) for a in self.agents}
+        
+        try:
+            import experiment
+            scale = 1000.0 / max(100.0, experiment.CURRENT_VPH)
+        except (ImportError, AttributeError):
+            scale = 1.0
+            
+        f_rew = {a: rewards.get(a, 0.0) * scale for a in self.agents}
+        
         f_term = {a: terminations.get(a, False) for a in self.agents}
         f_trunc = {a: truncations.get(a, False) for a in self.agents}
         f_info = {a: infos.get(a, {}) for a in self.agents}
