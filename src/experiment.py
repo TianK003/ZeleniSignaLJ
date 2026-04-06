@@ -196,6 +196,7 @@ def make_train_env(net_file, route_file, num_seconds):
         min_green=MIN_GREEN,
         max_green=MAX_GREEN,
         sumo_warnings=False,
+        additional_sumo_cmd="--ignore-route-errors",
     )
     # Patch: sumo-rl 1.4.5 doesn't set render_mode, but SuperSuit expects it
     if not hasattr(env.unwrapped, "render_mode"):
@@ -232,6 +233,7 @@ def make_eval_env(net_file, route_file, num_seconds, fixed_ts=False):
         single_agent=False,
         fixed_ts=fixed_ts,
         sumo_warnings=False,
+        additional_sumo_cmd="--ignore-route-errors",
     )
 
 
@@ -400,6 +402,9 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                 print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
                 print(f"     Random Time of day: {initial_hour:.1f}h, Traffic Flow: {initial_vph:.0f} cars/hour")
             
+            # Force SB3 to reset the environment state to load the newly generated routes!
+            model._last_obs = None
+
             model.learn(
                 total_timesteps=STEPS_PER_EPISODE,
                 callback=callbacks,
