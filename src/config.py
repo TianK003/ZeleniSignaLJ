@@ -1,11 +1,13 @@
 """
-Zeleni SignaLJ - Intersection Configuration
-=============================================
-TLS IDs for the 5 controlled intersections in the Bleiweisova triangle.
-All other traffic lights in the network run default fixed-time programs.
+Zeleni SignaLJ - Project Configuration
+=======================================
+All simulation, training, and intersection parameters in one place.
+Change values here — they propagate to experiment.py, train.py, evaluate.py.
 """
 
-# ── Target intersections ──
+# ══════════════════════════════════════════
+# Target intersections
+# ══════════════════════════════════════════
 # 1. Tivolska / Slovenska / Dunajska / Trg OF
 # 2. Bleiweisova / Tivolska / Celovska / Gosposvetska
 # 3. Slovenska / Gosposvetska / Dalmatinova
@@ -28,3 +30,31 @@ TS_NAMES = {
     TS_IDS[3]: "Trzaska",
     TS_IDS[4]: "Askerceva",
 }
+
+# ══════════════════════════════════════════
+# SUMO simulation parameters
+# ══════════════════════════════════════════
+NUM_SECONDS = 3600    # Episode duration (1 hour of simulated traffic)
+DELTA_TIME = 5        # Seconds between agent decisions
+YELLOW_TIME = 2       # Yellow phase duration between green switches
+MIN_GREEN = 10        # Minimum green phase before switching allowed
+MAX_GREEN = 90        # Maximum green phase before forced re-decision
+REWARD_FN = "queue"   # Reward = negative halted vehicles per step
+
+# ══════════════════════════════════════════
+# PPO hyperparameters
+# ══════════════════════════════════════════
+LEARNING_RATE = 1e-3  # Gradient update step size
+N_STEPS = 720         # Steps per agent before PPO update (= 1 full episode)
+BATCH_SIZE = 180      # Mini-batch size (divides evenly into N_STEPS * NUM_AGENTS)
+N_EPOCHS = 10         # Passes over rollout buffer per PPO update
+GAMMA = 0.99          # Discount factor (0=myopic, 1=infinite horizon)
+GAE_LAMBDA = 0.95     # GAE smoothing between bias and variance
+ENT_COEF = 0.05       # Entropy bonus — encourages exploration
+CLIP_RANGE = 0.2      # PPO clipping: limits policy change per update
+
+# ══════════════════════════════════════════
+# Derived constants (do not edit)
+# ══════════════════════════════════════════
+NUM_AGENTS = len(TS_IDS)
+STEPS_PER_EPISODE = (NUM_SECONDS // DELTA_TIME) * NUM_AGENTS  # 3600

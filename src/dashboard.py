@@ -425,9 +425,10 @@ function switchTab(idx) {{
   document.querySelectorAll('.tab-content').forEach((t, i) => t.classList.toggle('active', i === idx));
 }}
 
-// ── Chart instances ──
-let compChartInst, improvChartInst, intBarInst, intPctInst, intTrendInst;
-let trainChartInst, stepChartInst, hpScatter1Inst, hpScatter2Inst;
+// ── Chart instances (var, not let — avoids temporal dead zone when
+//    render() is called before this line during initial script execution) ──
+var compChartInst, improvChartInst, intBarInst, intPctInst, intTrendInst;
+var trainChartInst, stepChartInst, hpScatter1Inst, hpScatter2Inst;
 
 // ══════════════════════════════════════════
 // TAB 0: Filtering & comparison
@@ -911,7 +912,7 @@ function updateDetails() {{
 }}
 
 // ── Table sorting ──
-let sortCol = -1, sortAsc = true;
+var sortCol = -1, sortAsc = true;
 function sortTable(col) {{
   if (sortCol === col) sortAsc = !sortAsc;
   else {{ sortCol = col; sortAsc = true; }}

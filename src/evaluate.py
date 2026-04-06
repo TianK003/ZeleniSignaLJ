@@ -16,23 +16,26 @@ import pandas as pd
 import sumo_rl
 from stable_baselines3 import PPO
 
-from config import TS_IDS, TS_NAMES
+from config import (
+    TS_IDS, TS_NAMES, NUM_SECONDS,
+    DELTA_TIME, YELLOW_TIME, MIN_GREEN, MAX_GREEN, REWARD_FN,
+)
 from tls_programs import parse_original_programs, restore_non_target_programs
 
 
 def run_episode(net_file, route_file, model=None, use_gui=False,
-                num_seconds=3600, fixed_ts=False):
+                num_seconds=NUM_SECONDS, fixed_ts=False):
     """Run one episode. model=None with fixed_ts=True → real baseline."""
     env = sumo_rl.SumoEnvironment(
         net_file=net_file,
         route_file=route_file,
         use_gui=use_gui,
         num_seconds=num_seconds,
-        reward_fn="queue",
-        delta_time=5,
-        yellow_time=2,
-        min_green=10,
-        max_green=90,
+        reward_fn=REWARD_FN,
+        delta_time=DELTA_TIME,
+        yellow_time=YELLOW_TIME,
+        min_green=MIN_GREEN,
+        max_green=MAX_GREEN,
         single_agent=False,
         fixed_ts=fixed_ts,
         sumo_warnings=False,

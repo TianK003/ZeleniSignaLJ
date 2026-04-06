@@ -90,43 +90,27 @@ def restore_non_target_programs(env, target_agent_ids, original_programs):
         prog = original_programs[ts_id]
 
         # 1. Restore the original program via TraCI
-        #    Create a new Logic object with the original phases
+        #    Use sumo.trafficlight.Phase() (same approach as sumo-rl itself)
+        #    instead of importing traci/libsumo Phase classes directly,
+        #    which fails under LIBSUMO_AS_TRACI=1.
         try:
-            # Build phase objects for setProgramLogic
-            import traci
+            # Build phase objects using the sumo connection's Phase class
             phases = []
             for p in prog["phases"]:
-                phases.append(traci.trafficlight.Phase(
-                    duration=p["duration"],
-                    state=p["state"],
+                phases.append(sumo.trafficlight.Phase(
+                    p["duration"], p["state"]
                 ))
 
-            # Create a new program with ID "original" to avoid conflicts
-            logic = traci.trafficlight.Logic(
-                programID="original",
-                type=0,  # static
-                currentPhaseIndex=0,
-                phases=phases,
-            )
+            # Get the existing Logic object (sumo-rl installed), replace
+            # its phases with the original ones (same pattern sumo-rl uses)
+            programs = sumo.trafficlight.getAllProgramLogics(ts_id)
+            logic = programs[0]
+            logic.type = 0  # static
+            logic.phases = phases
             sumo.trafficlight.setProgramLogic(ts_id, logic)
-            sumo.trafficlight.setProgram(ts_id, "original")
-        except Exception:
-            # Fallback: try with libsumo directly
-            try:
-                import libsumo
-                phases = []
-                for p in prog["phases"]:
-                    phases.append(libsumo.Phase(
-                        p["duration"], p["state"]
-                    ))
-                logic = libsumo.Logic(
-                    "original", 0, 0, phases
-                )
-                sumo.trafficlight.setProgramLogic(ts_id, logic)
-                sumo.trafficlight.setProgram(ts_id, "original")
-            except Exception as e2:
-                print(f"  WARNING: Could not restore program for {ts_id}: {e2}")
-                continue
+        except Exception as e:
+            print(f"  WARNING: Could not restore program for {ts_id}: {e}")
+            continue
 
         # 2. Monkey-patch the TrafficSignal object so sumo-rl
         #    doesn't override the restored program

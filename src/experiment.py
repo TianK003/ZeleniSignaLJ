@@ -26,7 +26,12 @@ import supersuit as ss
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 
-from config import TS_IDS, TS_NAMES
+from config import (
+    TS_IDS, TS_NAMES, NUM_AGENTS, STEPS_PER_EPISODE,
+    NUM_SECONDS, DELTA_TIME, YELLOW_TIME, MIN_GREEN, MAX_GREEN, REWARD_FN,
+    LEARNING_RATE, N_STEPS, BATCH_SIZE, N_EPOCHS,
+    GAMMA, GAE_LAMBDA, ENT_COEF, CLIP_RANGE,
+)
 from agent_filter import AgentFilterWrapper
 from tls_programs import parse_original_programs, restore_non_target_programs
 
@@ -69,10 +74,12 @@ class TrainingLogCallback(BaseCallback):
     Also tracks per-step reward mean for the training curve (useful even
     before episodes complete).
     """
-    def __init__(self, log_path, print_freq=5000, verbose=0):
+    def __init__(self, log_path, print_freq=5000, steps_per_episode=3600,
+                 verbose=0):
         super().__init__(verbose)
         self.log_path = log_path
         self.print_freq = print_freq
+        self.steps_per_episode = steps_per_episode
         self.start_time = None
         self.episode_rewards = []
         self.log_rows = []
@@ -126,19 +133,16 @@ class TrainingLogCallback(BaseCallback):
             elapsed = time.time() - self.start_time
             sps = self.num_timesteps / elapsed if elapsed > 0 else 0
 
-            # Show episode rewards if available, otherwise show step rewards
-            if self.episode_rewards:
-                recent = self.episode_rewards[-10:]
-                avg_r = np.mean(recent)
-                label = f"avg_ep_reward(last10)={avg_r:.1f}"
-            else:
-                recent = self._step_rewards[-500:] if self._step_rewards else [0]
-                avg_r = np.mean(recent)
-                label = f"avg_step_reward(last500)={avg_r:.2f}"
+            # Show step-level reward (SuperSuit VecEnv masks done signals,
+            # so episode-level tracking doesn't work reliably)
+            recent = self._step_rewards[-500:] if self._step_rewards else [0]
+            avg_r = np.mean(recent)
+            label = f"avg_step_reward(last500)={avg_r:.2f}"
 
-            n_eps = len(self.episode_rewards)
+            # Compute episodes from timesteps (reliable regardless of done signals)
+            n_eps = self.num_timesteps // self.steps_per_episode
             print(f"    Step {self.num_timesteps}: "
-                  f"{label}, {n_eps} episodes, "
+                  f"{label}, ~{n_eps} episodes, "
                   f"{sps:.0f} steps/s, {elapsed/60:.1f}min")
         return True
 
@@ -182,11 +186,11 @@ def make_train_env(net_file, route_file, num_seconds):
         route_file=route_file,
         use_gui=False,
         num_seconds=num_seconds,
-        reward_fn="queue",
-        delta_time=5,
-        yellow_time=2,
-        min_green=10,
-        max_green=90,
+        reward_fn=REWARD_FN,
+        delta_time=DELTA_TIME,
+        yellow_time=YELLOW_TIME,
+        min_green=MIN_GREEN,
+        max_green=MAX_GREEN,
         sumo_warnings=False,
     )
     # Patch: sumo-rl 1.4.5 doesn't set render_mode, but SuperSuit expects it
@@ -216,11 +220,11 @@ def make_eval_env(net_file, route_file, num_seconds, fixed_ts=False):
         route_file=route_file,
         use_gui=False,
         num_seconds=num_seconds,
-        reward_fn="queue",
-        delta_time=5,
-        yellow_time=2,
-        min_green=10,
-        max_green=90,
+        reward_fn=REWARD_FN,
+        delta_time=DELTA_TIME,
+        yellow_time=YELLOW_TIME,
+        min_green=MIN_GREEN,
+        max_green=MAX_GREEN,
         single_agent=False,
         fixed_ts=fixed_ts,
         sumo_warnings=False,
@@ -329,27 +333,26 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     print(f"  Observation space: {env.observation_space}")
     print(f"  Action space: {env.action_space}")
 
-    # n_steps=720: exactly 1 full episode per rollout
-    # (3600s simulation / 5s delta_time = 720 SUMO steps per episode)
-    # batch_size=180: divides evenly into 720×5=3600 transitions (20 batches)
+    # All hyperparameters from src/config.py — single source of truth
     model = PPO(
         "MlpPolicy",
         env,
-        learning_rate=1e-3,
-        n_steps=720,
-        batch_size=180,
-        n_epochs=10,
-        gamma=0.99,
-        gae_lambda=0.95,
-        ent_coef=0.05,
-        clip_range=0.2,
+        learning_rate=LEARNING_RATE,
+        n_steps=N_STEPS,
+        batch_size=BATCH_SIZE,
+        n_epochs=N_EPOCHS,
+        gamma=GAMMA,
+        gae_lambda=GAE_LAMBDA,
+        ent_coef=ENT_COEF,
+        clip_range=CLIP_RANGE,
         verbose=0,
         tensorboard_log=os.path.join(run_dir, "tb_logs"),
     )
 
     # Callbacks
     log_path = os.path.join(run_dir, "training_log.csv")
-    callbacks = [TrainingLogCallback(log_path, print_freq=5000)]
+    callbacks = [TrainingLogCallback(log_path, print_freq=5000,
+                                     steps_per_episode=STEPS_PER_EPISODE)]
     if max_seconds:
         callbacks.append(TimeLimitCallback(max_seconds))
 
@@ -461,17 +464,12 @@ def main():
         return
 
     # Convert episode_count to timesteps if provided
-    # 1 episode = num_seconds / delta_time * num_agents
-    #           = 3600 / 5 * 5 = 3600 SB3 timesteps
-    NUM_AGENTS = len(TS_IDS)
-    DELTA_TIME = 5
-    steps_per_episode = (args.num_seconds // DELTA_TIME) * NUM_AGENTS
-
+    # 1 episode = NUM_SECONDS / DELTA_TIME * NUM_AGENTS = 3600 SB3 timesteps
     if args.episode_count is not None:
-        args.total_timesteps = args.episode_count * steps_per_episode
+        args.total_timesteps = args.episode_count * STEPS_PER_EPISODE
         print(f"  Episode count: {args.episode_count} episodes "
               f"= {args.total_timesteps} timesteps "
-              f"({steps_per_episode} per episode)")
+              f"({STEPS_PER_EPISODE} per episode)")
     elif args.total_timesteps is None:
         args.total_timesteps = 100_000  # default
 
@@ -497,11 +495,11 @@ def main():
         "ts_names": TS_NAMES,
         "approach": "PPO with parameter sharing (SuperSuit vec env)",
         "hyperparams": {
-            "lr": 1e-3, "n_steps": 720, "batch_size": 180,
-            "n_epochs": 10, "gamma": 0.99, "gae_lambda": 0.95,
-            "ent_coef": 0.05, "clip_range": 0.2,
-            "delta_time": 5, "yellow_time": 2,
-            "min_green": 10, "max_green": 90,
+            "lr": LEARNING_RATE, "n_steps": N_STEPS, "batch_size": BATCH_SIZE,
+            "n_epochs": N_EPOCHS, "gamma": GAMMA, "gae_lambda": GAE_LAMBDA,
+            "ent_coef": ENT_COEF, "clip_range": CLIP_RANGE,
+            "delta_time": DELTA_TIME, "yellow_time": YELLOW_TIME,
+            "min_green": MIN_GREEN, "max_green": MAX_GREEN,
         },
         "agent_filter": "5 target TLS only (other 32 run fixed-time)",
     }

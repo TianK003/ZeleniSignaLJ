@@ -19,7 +19,11 @@ import supersuit as ss
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 
-from config import TS_IDS
+from config import (
+    TS_IDS, NUM_SECONDS, DELTA_TIME, YELLOW_TIME, MIN_GREEN, MAX_GREEN,
+    REWARD_FN, LEARNING_RATE, N_STEPS, BATCH_SIZE, N_EPOCHS,
+    GAMMA, GAE_LAMBDA, ENT_COEF, CLIP_RANGE,
+)
 from agent_filter import AgentFilterWrapper
 
 
@@ -30,7 +34,7 @@ def parse_args():
     parser.add_argument("--route_file", type=str,
                         default="data/routes/routes.rou.xml")
     parser.add_argument("--total_timesteps", type=int, default=500_000)
-    parser.add_argument("--num_seconds", type=int, default=3600)
+    parser.add_argument("--num_seconds", type=int, default=NUM_SECONDS)
     parser.add_argument("--checkpoint_dir", type=str, default="models/")
     parser.add_argument("--log_dir", type=str, default="logs/")
     return parser.parse_args()
@@ -47,11 +51,11 @@ def main():
         route_file=args.route_file,
         use_gui=False,
         num_seconds=args.num_seconds,
-        reward_fn="queue",
-        delta_time=5,
-        yellow_time=2,
-        min_green=10,
-        max_green=90,
+        reward_fn=REWARD_FN,
+        delta_time=DELTA_TIME,
+        yellow_time=YELLOW_TIME,
+        min_green=MIN_GREEN,
+        max_green=MAX_GREEN,
         sumo_warnings=False,
     )
     if not hasattr(env.unwrapped, "render_mode"):
@@ -77,14 +81,14 @@ def main():
     model = PPO(
         "MlpPolicy",
         env,
-        learning_rate=1e-3,
-        n_steps=720,        # 1 full episode per rollout (3600s / 5s)
-        batch_size=180,     # divides evenly into 720*5=3600 transitions
-        n_epochs=10,
-        gamma=0.99,
-        gae_lambda=0.95,
-        ent_coef=0.05,
-        clip_range=0.2,
+        learning_rate=LEARNING_RATE,
+        n_steps=N_STEPS,
+        batch_size=BATCH_SIZE,
+        n_epochs=N_EPOCHS,
+        gamma=GAMMA,
+        gae_lambda=GAE_LAMBDA,
+        ent_coef=ENT_COEF,
+        clip_range=CLIP_RANGE,
         verbose=1,
         tensorboard_log=args.log_dir,
     )
