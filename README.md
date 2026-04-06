@@ -10,10 +10,18 @@ Agenti s spodbujevalnim ucenjem (neodvisni PPO), uceni v simulatorju SUMO, za op
 
 ## Ciljno obmocje
 
+Zaradi kompleksnosti optimizacije vecjega obmocja smo se osredoticili na optimizacijo le 5 krizisc. Zelimo narediti prototip, ki dokaze, da se promet lahko optimizira, seveda bi pa v realnosti naredili optimizacijo na nivoju obmocja.
+
 Tri kljucna krizisca, ki tvorijo trikotnik:
 - **Bleiweisova / Trzaska / Askerceva** (jugozahod)
 - **Bleiweisova / Celovska / Tivolska** (severozahod)
 - **Tivolska / Dunajska / Slovenska** (severovzhod)
+
+Zraven smo dodali se 2 manjsi krizisci, ki mocno vplivata na ta tri kljucna krizisca:
+- **Slovenska/ Gosposvetska / Dalmatinova**
+- **Askerceva / Presernova / Groharjeva**
+
+![Slika izbranih krizisc](./data/media/Observed_intersections.png)
 
 ## Podatki o obmocju
 
@@ -31,7 +39,7 @@ Podatki o cestnem omrezju so pridobljeni iz OpenStreetMap (ODbL licenca).
 
 Podatke je mogoce ponovno prenesti z Overpass API:
 ```bash
-wget -O data/osm/bleiweisova.osm \
+wget -O data/osm/map.osm \
   "https://overpass-api.de/api/map?bbox=14.49385,46.04540,14.50687,46.05840"
 ```
 
