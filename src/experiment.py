@@ -40,6 +40,7 @@ from generate_demand import write_demand_xml
 import random
 
 from sumo_rl.environment.observations import ObservationFunction
+import gymnasium as gym
 from gymnasium import spaces
 
 CURRENT_HOUR = 0.0
@@ -205,54 +206,130 @@ class TrainingLogCallback(BaseCallback):
 
 # ── Environment creation ──
 
-def make_train_env(net_file, route_file, num_seconds):
-    """
-    Create a PettingZoo parallel env → AgentFilter → SuperSuit vec env.
+from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecEnvWrapper
 
-    Key insight: without filtering, SuperSuit + PPO trains one shared
-    policy for ALL 37 traffic lights. This is terrible because:
-    1. A single policy can't handle 37 structurally different intersections
-    2. RL-controlling the 32 non-target intersections makes them worse
-    3. Worse non-target traffic cascades into the 5 target intersections
-
-    With AgentFilterWrapper, only the 5 target TLS are RL agents.
-    The other 32 keep their real signal programs (default action=0).
-    This means PPO only needs to learn a policy for 5 similar intersections.
+class FlattenMultiAgentVecEnv(VecEnvWrapper):
     """
-    env = sumo_rl.parallel_env(
-        net_file=net_file,
-        route_file=route_file,
-        use_gui=False,
-        num_seconds=num_seconds,
-        reward_fn=REWARD_FN,
-        delta_time=DELTA_TIME,
-        yellow_time=YELLOW_TIME,
-        min_green=MIN_GREEN,
-        max_green=MAX_GREEN,
-        sumo_warnings=False,
-        additional_sumo_cmd="--ignore-route-errors",
-        observation_class=TimeEncodedObservationFunction,
-    )
-    # Patch: sumo-rl 1.4.5 doesn't set render_mode, but SuperSuit expects it
-    if not hasattr(env.unwrapped, "render_mode"):
-        env.unwrapped.render_mode = None
+    SubprocVecEnv handles SB3 vectorization by sending commands to child processes.
+    However, when PettingZoo is used underneath, each child process returns batches of shape (num_agents, obs_dim).
+    SB3 natively assumes each child returns a single shape (obs_dim), so it stacks them into (num_cpus, num_agents, obs_dim).
+    This wrapper effortlessly flattens the output natively to (num_cpus * num_agents, obs_dim) so PPO accepts it.
+    """
+    def __init__(self, venv, num_agents):
+        super().__init__(venv)
+        self.num_agents = num_agents
+        self.num_envs = venv.num_envs * num_agents
         
-    env.unwrapped.warmup_seconds = WARMUP_SECONDS
+    def reset(self):
+        res = self.venv.reset()
+        if isinstance(res, tuple):
+            obs, info = res
+            return obs.reshape((self.num_envs, -1)), info
+        else:
+            return res.reshape((self.num_envs, -1))
+        
+    def step_async(self, actions):
+        # actions shape: (num_cpus * num_agents,)
+        acts = actions.reshape((self.venv.num_envs, self.num_agents))
+        self.venv.step_async(acts)
+        
+    def step_wait(self):
+        obs, rew, done, info = self.venv.step_wait()
+        obs = obs.reshape((self.num_envs, -1))
+        rew = rew.reshape((self.num_envs,))
+        
+        flat_done = np.zeros(self.num_envs, dtype=bool)
+        flat_info = []
+        idx = 0
+        for worker_info in info:
+            # Extract the real agents info list hidden from SubprocVecEnv
+            agents_info = worker_info.get("agents_info", [])
+            for item in agents_info:
+                # Reconstruct real done vectors
+                is_done = bool(item.get('__real_tm', 0) or item.get('__real_tc', 0))
+                flat_done[idx] = is_done
+                flat_info.append(item)
+                idx += 1
+                
+        return obs, rew, flat_done, flat_info
 
-    # CRITICAL: Filter to only target intersections BEFORE SuperSuit
-    # Non-target TLS run their original SUMO signal programs (restored
-    # from net.xml after sumo-rl replaces them during env creation)
-    env = AgentFilterWrapper(
-        env, target_agents=TS_IDS, net_file=net_file, default_action=0
-    )
 
-    # Pad observations so all 5 target agents have the same obs space size
-    env = ss.pad_observations_v0(env)
-    env = ss.pad_action_space_v0(env)
-    # PettingZoo parallel → SB3 VecEnv (each agent = sub-environment)
-    env = ss.pettingzoo_env_to_vec_env_v1(env)
-    env = ss.concat_vec_envs_v1(env, 1, base_class="stable_baselines3")
-    return env
+
+class GymnasiumSubEnv(gym.Env):
+    """
+    SubprocVecEnv forces all child node environments to formally subclass `gymnasium.Env`.
+    Since PettingZoo outputs a VectorEnv, we wrap it cleanly here to bypass SB3's restrictive typings.
+    """
+    def __init__(self, venv):
+        self.venv = venv
+        self.observation_space = venv.observation_space
+        self.action_space = venv.action_space
+        self.render_mode = None
+        self.num_envs = getattr(venv, 'num_envs', 1)
+
+    def step(self, action):
+        obs, rews, tms, tcs, infs = self.venv.step(action)
+        # Pack the real booleans inside the infs dictionaries
+        # This brilliantly blinds SubprocVecEnv from trying to evaluate array truth values
+        for i in range(self.num_envs):
+            infs[i]['__real_tm'] = float(tms[i])
+            infs[i]['__real_tc'] = float(tcs[i])
+            
+        # We explicitly return False, False tricking SubprocVecEnv into acting purely as a passthrough pipe!
+        # MarkovVectorEnv internally handles auto-resetting properly anyway.
+        # We wrap 'infs' in a dictionary because SubprocVecEnv forces mutation on the info dict. 
+        return obs, rews, False, False, {"agents_info": infs}
+
+    def reset(self, seed=None, options=None):
+        return self.venv.reset(seed=seed, options=options)
+    
+    def close(self):
+        self.venv.close()
+
+def make_env_factory(net_file, route_file, num_seconds):
+    """
+    Delays the SUMO instantiations so 'libsumo' only boots up INSIDE the child CPU nodes!
+    """
+    def _init():
+        env = sumo_rl.parallel_env(
+            net_file=net_file,
+            route_file=route_file,
+            use_gui=False,
+            num_seconds=num_seconds,
+            reward_fn=REWARD_FN,
+            delta_time=DELTA_TIME,
+            yellow_time=YELLOW_TIME,
+            min_green=MIN_GREEN,
+            max_green=MAX_GREEN,
+            sumo_warnings=False,
+            additional_sumo_cmd="--ignore-route-errors",
+            observation_class=TimeEncodedObservationFunction,
+        )
+        if not hasattr(env.unwrapped, "render_mode"):
+            env.unwrapped.render_mode = None
+        env.unwrapped.warmup_seconds = WARMUP_SECONDS
+        
+        env = AgentFilterWrapper(
+            env, target_agents=TS_IDS, net_file=net_file, default_action=0
+        )
+        env = ss.pad_observations_v0(env)
+        env = ss.pad_action_space_v0(env)
+        env = ss.pettingzoo_env_to_vec_env_v1(env)
+        return GymnasiumSubEnv(env)
+    return _init
+
+def build_vectorized_env(net_file, route_file, num_seconds, num_cpus):
+    factories = [make_env_factory(net_file, route_file, num_seconds) for _ in range(num_cpus)]
+    if num_cpus > 1:
+        # Multiprocessing across CPU nodes safely
+        base_env = SubprocVecEnv(factories)
+    else:
+        # Single process (local testing)
+        base_env = DummyVecEnv(factories)
+    
+    # Flatten the matrices so SB3 PPO accepts it cleanly
+    flat_env = FlattenMultiAgentVecEnv(base_env, num_agents=NUM_AGENTS)
+    return flat_env
 
 
 def make_eval_env(net_file, route_file, num_seconds, fixed_ts=False):
@@ -365,7 +442,7 @@ def run_evaluation(net_file, route_file, num_seconds, model):
 # ── Training ──
 
 def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
-              max_seconds=None, run_curriculum=False, log_curriculum=False):
+              max_seconds=None, run_curriculum=False, log_curriculum=False, num_cpus=1):
     """
     Train PPO with parameter sharing via SuperSuit.
     All traffic signals share one policy (standard IPPO approach).
@@ -382,11 +459,11 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
         initial_vph = get_vph(initial_hour, TOTAL_DAILY_CARS)
         write_demand_xml([(0, num_seconds, initial_vph/3600.0)], net_file, tmp_trips, train_route_file)
         
-        print("  Creating vectorized training environment with curriculum routes...")
-        env = make_train_env(net_file, train_route_file, num_seconds)
+        print(f"  Creating vectorized training environment with curriculum routes on {num_cpus} CPUs...")
+        env = build_vectorized_env(net_file, train_route_file, num_seconds, num_cpus)
     else:
-        print("  Creating vectorized training environment...")
-        env = make_train_env(net_file, route_file, num_seconds)
+        print(f"  Creating vectorized training environment on {num_cpus} CPUs...")
+        env = build_vectorized_env(net_file, route_file, num_seconds, num_cpus)
 
     print(f"  Observation space: {env.observation_space}")
     print(f"  Action space: {env.action_space}")
@@ -590,6 +667,8 @@ def main():
                         help="Train the AI on random 1-hour chunks drawn from the 24h mathematical traffic baseline (Curriculum Learning).")
     parser.add_argument("--log_curriculum", action="store_true",
                         help="During curriculum learning, exact evaluate against baseline every episode and append to log file.")
+    parser.add_argument("--num_cpus", type=int, default=1,
+                        help="Number of independent parallel SUMO CPU processes (useful for HPCs like Vega).")
     args = parser.parse_args()
 
     if args.compare_only:
@@ -663,7 +742,7 @@ def main():
     print("\n[2/3] Training PPO agents...")
     model, train_time = train_ppo(
         args.net_file, args.route_file, args.num_seconds,
-        args.total_timesteps, run_dir, max_seconds, args.curriculum, args.log_curriculum
+        args.total_timesteps, run_dir, max_seconds, args.curriculum, args.log_curriculum, args.num_cpus
     )
     meta["train_time_s"] = train_time
     meta["actual_timesteps"] = model.num_timesteps
