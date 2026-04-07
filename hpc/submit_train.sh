@@ -8,7 +8,6 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --gres=gpu:1
 #SBATCH --mem=48G
 
 # Make sure logs directory exists
