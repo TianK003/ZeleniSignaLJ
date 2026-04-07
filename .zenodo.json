@@ -1,0 +1,47 @@
+{
+  "title": "Zeleni SignaLJ: RL-based Adaptive Traffic Signal Control for Ljubljana",
+  "description": "Reinforcement learning system for adaptive traffic signal control at five critical intersections in Ljubljana's Bleiweisova triangle (Tržaška, Celovška, Dunajska convergence zone). Uses multi-agent PPO with parameter sharing, trained in the SUMO microscopic traffic simulator via sumo-rl and stable-baselines3. Developed as a prototype for the Arnes HackathON 2026 by team Ransomware.",
+  "upload_type": "software",
+  "version": "0.1.0",
+  "publication_date": "2026-04-07",
+  "language": "slv",
+  "license": "MIT",
+  "creators": [
+    {
+      "name": "Jenic, Nik",
+      "affiliation": ""
+    },
+    {
+      "name": "Kljucanin, Tian",
+      "affiliation": ""
+    },
+    {
+      "name": "Omahen, Nace",
+      "affiliation": ""
+    },
+    {
+      "name": "Uhan, Masa",
+      "affiliation": ""
+    }
+  ],
+  "keywords": [
+    "reinforcement learning",
+    "traffic signal control",
+    "multi-agent systems",
+    "SUMO",
+    "PPO",
+    "Ljubljana",
+    "adaptive traffic control",
+    "sumo-rl",
+    "stable-baselines3",
+    "SuperSuit"
+  ],
+  "related_identifiers": [
+    {
+      "scheme": "url",
+      "identifier": "https://github.com/TianK003/ZeleniSignaLJ",
+      "relation": "isSupplementTo"
+    }
+  ],
+  "communities": []
+}
