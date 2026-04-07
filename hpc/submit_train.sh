@@ -3,29 +3,30 @@
 #SBATCH --job-name=zeleni_ppo_train
 #SBATCH --output=logs/ppo_train_%j.out
 #SBATCH --error=logs/ppo_train_%j.err
-#SBATCH --time=04:00:00
-#SBATCH --partition=gpu
+#SBATCH --time=00:30:00
+#SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=64
 #SBATCH --gres=gpu:1
-#SBATCH --mem=64G
+#SBATCH --mem=48G
 
-# Setup
-module load Apptainer 2>/dev/null || module load tools/Singularity
-
-export APPTAINER_TMPDIR=/scratch/$USER/apptainer_tmp/${SLURM_JOB_ID}
-mkdir -p $APPTAINER_TMPDIR
+# Make sure logs directory exists
 mkdir -p logs
 
-# Run training in container with GPU passthrough
-srun apptainer exec --nv \
-    --bind $PWD:/workspace \
-    /scratch/$USER/traffic_rl.sif \
-    python /workspace/src/train.py \
-        --num_envs 32 \
-        --total_timesteps 2000000 \
-        --checkpoint_dir /workspace/models/
+# Activate the local virtual environment (where we pip-installed eclipse-sumo)
+# Assuming .venv is in the project root directory
+source .venv/bin/activate
 
-# Cleanup temp directory
-rm -rf $APPTAINER_TMPDIR
+# Dynamically map the SUMO environment variables
+export SUMO_HOME=$(python -c "import sumo, os; print(os.environ['SUMO_HOME'])")
+export LIBSUMO_AS_TRACI="1"
+
+echo "Booting up Zeleni SignaLJ on 32 CPUs..."
+
+# Fire the massive parallel script natively
+srun python src/experiment.py \
+    --episode_count 100 \
+    --curriculum \
+    --tag hpc_32cpu_run \
+    --num_cpus 64
