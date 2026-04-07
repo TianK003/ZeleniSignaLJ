@@ -17,8 +17,8 @@ mkdir -p logs
 # Assuming .venv is in the project root directory
 source .venv/bin/activate
 
-# Dynamically map the SUMO environment variables and force the compute node to see ~/.local 
-export SUMO_HOME=$(python -c "import sumo, os; print(os.environ.get('SUMO_HOME', ''))" 2>/dev/null)
+# Map SUMO_HOME to a guaranteed Github source checkout because the pip wheel removes tools/
+export SUMO_HOME=$HOME/sumo_src
 export LIBSUMO_AS_TRACI="1"
 export PYTHONPATH=$HOME/.local/lib/python3.12/site-packages:$PYTHONPATH
 export PATH=$HOME/.local/bin:$PATH
