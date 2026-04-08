@@ -3,7 +3,7 @@
 #SBATCH --job-name=zs_eveningrush_queue_curr
 #SBATCH --output=logs/zs_eveningrush_queue_curr_%j.out
 #SBATCH --error=logs/zs_eveningrush_queue_curr_%j.err
-#SBATCH --time=01:00:00
+#SBATCH --time=16:00:00
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -14,6 +14,6 @@ source hpc/common.sh
 
 srun python src/experiment.py \
     --num_cpus 128 \
-    --episode_count 100 \
-    --scenario evening_rush --reward_fn queue --curriculum \
-    --tag eveningrush_queue_curriculum_100ep
+    --episode_count 200 \
+    --scenario evening_rush --reward_fn queue --curriculum --log_curriculum \
+    --tag eveningrush_queue_curriculum_200ep

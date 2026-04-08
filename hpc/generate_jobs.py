@@ -6,7 +6,7 @@ HPC_DIR = os.path.dirname(os.path.abspath(__file__))
 REWARD_FNS = ["queue", "pressure", "diff-waiting-time"]
 LEARNING_RATES = [1e-3, 3e-4]
 SCENARIOS = ["morning_rush", "evening_rush"]
-EPISODES = 100
+EPISODES = 200
 
 def lr_str(lr):
     if lr == 1e-3: return "lr1e3"
@@ -26,7 +26,7 @@ def write_script(filename, job_name, extra_args, tag):
 #SBATCH --job-name={job_name}
 #SBATCH --output=logs/{job_name}_%j.out
 #SBATCH --error=logs/{job_name}_%j.err
-#SBATCH --time=01:00:00
+#SBATCH --time=16:00:00
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -82,7 +82,7 @@ for scenario in SCENARIOS:
         tag = f"{ss}_{rs}_curriculum_{EPISODES}ep"
         job = f"zs_{ss}_{rs}_curr"
         fname = f"{ss}_{rs}_curriculum.slurm"
-        args = f"--scenario {scenario} --reward_fn {reward} --curriculum"
+        args = f"--scenario {scenario} --reward_fn {reward} --curriculum --log_curriculum"
         scripts.append(write_script(fname, job, args, tag))
 
 print(f"Generated {len(scripts)} SLURM scripts (all {EPISODES} episodes):")
