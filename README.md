@@ -61,6 +61,9 @@ pip install -r requirements.txt
 # 3. Preverjanje namestitve
 python -c "import sumo_rl; print('sumo-rl', sumo_rl.__version__)"
 
+# 3b. Pospešitev SUMO (5-8x hitrejše — uporabi libsumo namesto TraCI socketa)
+export LIBSUMO_AS_TRACI=1
+
 # 4a. Generiranje enakomerne prometne obremenitve (za testiranje)
 python src/generate_demand.py --profile uniform --duration 3600 --peak_vph 800
 
@@ -381,6 +384,62 @@ zeleni-signalj/
 - **stable-baselines3 2.8.0** — implementacija PPO algoritma
 - **SuperSuit 3.9+** — vektorizacija PettingZoo okolja za SB3
 - **HPC Vega** (IZUM) — superračunalnik za učenje z večjim številom epizod
+
+## HPC eksperimenti
+
+30 pripravljenih SLURM skript v `hpc/` za sistematično iskanje najboljše konfiguracije.
+
+**Matrika eksperimentov:**
+- 3 nagradne funkcije: `queue`, `pressure`, `diff-waiting-time`
+- 2 hitrosti učenja: `1e-3`, `3e-4`
+- 3 dolžine učenja: 100, 250, 500 epizod
+- Entropy annealing variante (0.05 -> 0.01)
+- Curriculum learning variante
+
+```bash
+# Oddaj vse eksperimente
+bash hpc/submit_all.sh
+
+# Oddaj samo pressure variante
+bash hpc/submit_all.sh pressure
+
+# Oddaj samo 100-epizodne eksperimente
+bash hpc/submit_all.sh 100ep
+
+# Oddaj samo entropy annealing variante
+bash hpc/submit_all.sh entanneal
+
+# Spremljaj status
+squeue -u $USER
+```
+
+## Vizualizacija in demo (TODO)
+
+Načrt za pripravo končne predstavitve za sodnike hackathona.
+
+### Rezultati in nadzorna plošča
+- [ ] Zaženi 5-10+ eksperimentov na HPC z različnimi nagradnimi funkcijami
+- [ ] Prenesi rezultate iz Vege (`results/experiments/`)
+- [ ] Generiraj nadzorno ploščo: `python src/dashboard.py`
+- [ ] Preveri zavihke: primerjava, križišča, učne krivulje, hiperparametri
+
+### Vizualizacija prometa
+- [ ] Zaženi najboljši model v SUMO GUI: `python src/evaluate.py --gui --model <pot_do_modela>.zip --scenario morning_rush`
+- [ ] Posnimi 30-sekundni video zaslona SUMO GUI kot rezervo (ffmpeg ali OBS)
+- [ ] Priprava toplotne karte prometnih čakalnih vrst (baseline vs. RL, po korakih)
+
+### Predstavitev
+- [ ] Kontekstna slika: `data/media/Observed_intersections.png` — 5 križišč na zemljevidu
+- [ ] Arhitekturni diagram: Mermaid diagram iz README-ja
+- [ ] Nadzorna plošča v živo: odpri `results/dashboard.html`, pokaži zavihke
+- [ ] SUMO GUI demo v živo ALI predposneti video
+- [ ] Zaključni diapozitiv: tabela scenarij x nagradna funkcija x izboljšanje %
+
+### Poročilo
+- [ ] Metodologija: IPPO z deljeno politiko, 5 križišč, SUMO simulator
+- [ ] Rezultati: tabele in grafi iz nadzorne plošče
+- [ ] Analiza: katera križišča se izboljšajo, katera ne, zakaj
+- [ ] Zaključek: primerjava nagradnih funkcij, priporočila za produkcijo
 
 ## Ekipa
 
