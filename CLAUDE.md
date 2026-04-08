@@ -71,9 +71,9 @@ netconvert --osm-files data/osm/bleiweisova.osm \
 - **Parameter-sharing PPO** via SuperSuit: the 5 target traffic signals share one policy network. Each signal is treated as a separate sub-environment in a vectorized env. Non-target TLS have their original SUMO programs restored via `src/tls_programs.py` and are monkey-patched so sumo-rl cannot override them. This is critical — without filtering, all 37 TLS share one policy and performance is terrible.
 - **Non-target TLS handling** (`src/tls_programs.py`): sumo-rl's `build_phases()` replaces ALL TLS programs on init. To keep non-target TLS running their real signal programs, we: (1) parse original programs from .net.xml before env creation, (2) after each `env.reset()`, restore them via TraCI `setProgramLogic` + `setProgram`, (3) monkey-patch `set_next_phase` to a no-op and `update` to only increment the time counter. Without this, non-target TLS would be stuck on phase 0 (action=0 = "keep current green phase", NOT "run default program").
 - **AgentFilterWrapper** (`src/agent_filter.py`): PettingZoo parallel wrapper that exposes only the 5 target agents to the RL algorithm. On `reset()`, it calls `restore_non_target_programs()`. Non-target agents receive `default_action=0` which is ignored by their monkey-patched `set_next_phase`.
-- **TimeEncodedObservationFunction** (`src/experiment.py`): Extended observation function that appends `sin(2π·t/86400)` and `cos(2π·t/86400)` to the base observation vector. This gives the agent a smooth, cyclical perception of time-of-day. The global `CURRENT_HOUR` variable in `experiment.py` must be set before each episode (it's set automatically by `experiment.py` and `train.py` based on the scenario). All training, evaluation, and schedule controller use this observation class.
-- **`demand_math.py`** (`src/demand_math.py`): Bimodal 24h traffic curve. `get_vph(hour, total_daily_cars)` returns vehicles/hour at a given real-world hour. Two Gaussian peaks at 08:00 (morning rush, σ=1.5h) and 16:00 (evening rush, σ=2.0h) plus a small base noise. Numerically integrates the shape to guarantee exactly `total_daily_cars` vehicles in 24h. Used by curriculum learning and `generate_rush_demand.py`.
-- **`generate_rush_demand.py`** (`src/generate_rush_demand.py`): Generates realistic rush-hour route files using the bimodal curve. Three scenarios: `morning_rush` (06:00-10:00, 4h, 70% inbound bias), `evening_rush` (14:00-18:00, 4h, 70% outbound bias), `offpeak` (12:00-13:00, 1h, symmetric). Inbound/outbound directional asymmetry is approximated by merging two trip batches with different `fringe_factor` values. Output files: `routes_morning_rush.rou.xml`, `routes_evening_rush.rou.xml`, `routes_offpeak.rou.xml`.
+- **TimeEncodedObservationFunction** (`src/experiment.py`): Extended observation function that appends `sin(2π·t/86400)` and `cos(2π·t/86400)` to the base observation vector. This gives the agent a smooth, cyclical perception of time-of-day. The global `CURRENT_HOUR` variable in `experiment.py` must be set before each episode (it's set automatically by `experiment.py` based on the scenario). All training, evaluation, and schedule controller use this observation class.
+- **`demand_math.py`** (`src/demand_math.py`): Bimodal 24h traffic curve. `get_vph(hour, total_daily_cars)` returns vehicles/hour at a given real-world hour. Two Gaussian peaks at 08:00 (morning rush, σ=1.5h) and 16:00 (evening rush, σ=2.0h) plus a small base noise. Numerically integrates the shape to guarantee exactly `total_daily_cars` vehicles in 24h. Used by curriculum learning and `generate_demand.py`.
+- **`generate_demand.py`** (`src/generate_demand.py`): Unified demand generator. Two modes: `--profile uniform` for constant-rate smoke tests, and `--scenario morning_rush|evening_rush|offpeak|all` for realistic rush-hour route files using the bimodal curve. Rush scenarios have directional asymmetry (70% inbound morning / 70% outbound evening) via two trip batches with different `fringe_factor` values. Output files: `routes_morning_rush.rou.xml`, `routes_evening_rush.rou.xml`, `routes_offpeak.rou.xml`. Core function `write_demand_xml()` is imported by `experiment.py`.
 - **`schedule_controller.py`** (`src/schedule_controller.py`): Production deployment module. `ScheduleController` loads two PPO models (morning + evening) and dispatches to the correct one based on the hour of day. Rush hour windows (06:00-10:00, 14:00-18:00) use RL; all other times use fixed-time programs. Can run full simulation episodes with time-aware control via `run_episode()`.
 - **`eval_helper.py`** (`src/eval_helper.py`): Subprocess helper for safe evaluation during curriculum learning. Called by `experiment.py` via `subprocess.run()` to run baseline and RL evaluation in separate SUMO processes (libsumo cannot be re-initialized in the same process).
 - **Phase-based control**: agents select from predefined valid phase combinations (not individual lights)
@@ -149,10 +149,9 @@ n_steps = 720 → 720 * 5 agents = 3600 timesteps = exactly 1 episode per PPO up
 - SUMO config: `data/networks/ljubljana.sumocfg`
 - Routes: `data/routes/routes.rou.xml`
 - Intersection config: `src/config.py` (TS_IDS, TS_NAMES, all sim/PPO params, rush-hour windows)
-- Training: `src/train.py` (standalone, with `--scenario`), `src/experiment.py` (full pipeline)
+- Training: `src/experiment.py` (full pipeline: baseline → train → eval, with `--scenario`, `--curriculum`, `--num_cpus`)
 - Evaluation: `src/evaluate.py` (multi-scenario: morning_rush, evening_rush, offpeak; outputs `results/rush_hour_comparison.csv`)
-- Demand generation: `src/generate_demand.py` (uniform, rush_hour, double profiles)
-- Rush-hour demand: `src/generate_rush_demand.py` (bimodal curve → morning_rush, evening_rush, offpeak route files)
+- Demand generation: `src/generate_demand.py` (uniform profile + rush-hour scenarios via bimodal curve)
 - Bimodal traffic curve: `src/demand_math.py` (get_vph(hour, total_daily_cars))
 - Schedule controller: `src/schedule_controller.py` (time-of-day dispatch: RL in rush hours, fixed-time otherwise)
 - Curriculum eval helper: `src/eval_helper.py` (subprocess helper for safe baseline/RL eval during curriculum)
@@ -180,7 +179,7 @@ export LIBSUMO_AS_TRACI=1
 python src/generate_demand.py --profile uniform --duration 3600 --peak_vph 800
 
 # Generate rush-hour route files (required for rush-hour training/eval)
-python src/generate_rush_demand.py --scenario all
+python src/generate_demand.py --scenario all
 # -> data/routes/routes_morning_rush.rou.xml, routes_evening_rush.rou.xml, routes_offpeak.rou.xml
 
 # Run simulation sanity check
@@ -193,7 +192,7 @@ python src/experiment.py --episode_count 10 --tag smoke_test
 # Train for 50 episodes on uniform demand (~4 min locally)
 python src/experiment.py --episode_count 50 --tag local_50ep
 
-# Train on morning rush scenario (requires generate_rush_demand.py first)
+# Train on morning rush scenario (requires generate_demand.py --scenario first)
 python src/experiment.py --scenario morning_rush --episode_count 100 --tag jutro_100ep
 
 # Train with curriculum learning (random hour slices across full day)
@@ -226,10 +225,6 @@ python src/evaluate.py --model results/experiments/XXXXX/ppo_shared_policy.zip
 
 # Evaluate only one scenario
 python src/evaluate.py --model models/ppo_morning_rush_final.zip --scenario morning_rush
-
-# Standalone train.py (no baseline/eval phases)
-python src/train.py --scenario morning_rush --total_timesteps 500000
-python src/train.py --scenario morning_rush --resume models/ppo_morning_rush_10000_steps.zip
 
 # Open SUMO GUI
 sumo-gui data/networks/ljubljana.sumocfg

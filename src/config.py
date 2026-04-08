@@ -2,7 +2,7 @@
 Zeleni SignaLJ - Project Configuration
 =======================================
 All simulation, training, and intersection parameters in one place.
-Change values here — they propagate to experiment.py, train.py, evaluate.py.
+Change values here — they propagate to experiment.py and evaluate.py.
 """
 
 # ══════════════════════════════════════════

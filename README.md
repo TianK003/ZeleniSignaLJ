@@ -65,7 +65,7 @@ python -c "import sumo_rl; print('sumo-rl', sumo_rl.__version__)"
 python src/generate_demand.py --profile uniform --duration 3600 --peak_vph 800
 
 # 4b. Generiranje prometnih scenarijev koničnih ur (za resno učenje)
-python src/generate_rush_demand.py --scenario all
+python src/generate_demand.py --scenario all
 # Ustvari: routes_morning_rush.rou.xml, routes_evening_rush.rou.xml, routes_offpeak.rou.xml
 
 # 5. Učenje — enaka prometna obremenitev (lokalno, 50 epizod ~ 4 min)
@@ -87,43 +87,30 @@ python src/evaluate.py --model results/experiments/XXXXX/ppo_shared_policy.zip
 python src/evaluate.py --model models/ppo_morning_rush_final.zip --scenario morning_rush
 ```
 
-## Generiranje prometnega povpraševanja
+## Generiranje prometnega povpraševanja (`generate_demand.py`)
 
-### Enaka obremenitev (`generate_demand.py`)
-
-Za testiranje in odpravljanje napak. Trije profili:
+Dva načina uporabe: `--profile` za enakomerno testno obremenitev ali `--scenario` za realistične scenarije koničnih ur iz dvokoničnega 24h matematičnega modela (8:00 jutranja + 16:00 večerna konica). Scenariji modelirajo tudi smer prometnega toka: jutranja konica ima 70 % prometa usmerjenega v center, večerna konica pa 70 % iz centra.
 
 ```bash
-# Enakomerna obremenitev (stalna, za dimne teste)
+# Enakomerna obremenitev (za dimne teste)
 python src/generate_demand.py --profile uniform --duration 3600 --peak_vph 800
 
-# Ena konica (jutranja ali večerna špica, 4 ure)
-python src/generate_demand.py --profile rush_hour --duration 14400 --peak_vph 1800
+# Vsi scenariji koničnih ur naenkrat (priporočeno za resno učenje)
+python src/generate_demand.py --scenario all
 
-# Dve konici (jutro + večer, cel dan)
-python src/generate_demand.py --profile double --duration 28800 --peak_vph 1800
+# Posamezni scenariji
+python src/generate_demand.py --scenario morning_rush   # 06:00-10:00, 4h, bimodalna krivulja
+python src/generate_demand.py --scenario evening_rush   # 14:00-18:00, 4h, bimodalna krivulja
+python src/generate_demand.py --scenario offpeak        # 12:00-13:00, 1h, referenčni scenarij
 ```
 
 | Parameter | Opis |
 |-----------|------|
-| `--profile` | `uniform` / `rush_hour` / `double` |
-| `--duration` | Trajanje simulacije v sekundah |
-| `--peak_vph` | Koničen pretok v vozilih/uro |
+| `--profile uniform` | Enakomerna obremenitev (za dimne teste) |
+| `--scenario` | `morning_rush` / `evening_rush` / `offpeak` / `all` |
+| `--duration` | Trajanje simulacije v sekundah (samo `--profile` način) |
+| `--peak_vph` | Koničen pretok v vozilih/uro (samo `--profile` način) |
 | `--fringe_factor` | Verjetnost izvorov na robovih (privzeto 5.0) |
-
-### Scenariji koničnih ur (`generate_rush_demand.py`)
-
-Realistični scenariji, ki temeljijo na dvokoničnem matematičnem modelu prometnega povpraševanja čez 24 ur (8:00 jutranja konica + 16:00 večerna konica). Modelira tudi smer prometnega toka: jutranja konica ima 70 % promet usmerjen v center, večerna konica pa 70 % iz centra.
-
-```bash
-# Vsi scenariji naenkrat (priporočeno)
-python src/generate_rush_demand.py --scenario all
-
-# Posamezni scenariji
-python src/generate_rush_demand.py --scenario morning_rush   # 06:00-10:00, 4h, bimodalna krivulja
-python src/generate_rush_demand.py --scenario evening_rush   # 14:00-18:00, 4h, bimodalna krivulja
-python src/generate_rush_demand.py --scenario offpeak        # 12:00-13:00, 1h, referenčni scenarij
-```
 
 | Scenarij | Okno | Trajanje | Datoteka |
 |----------|------|----------|---------|
@@ -131,9 +118,7 @@ python src/generate_rush_demand.py --scenario offpeak        # 12:00-13:00, 1h, 
 | `evening_rush` | 14:00-18:00 | 4 ure | `routes_evening_rush.rou.xml` |
 | `offpeak` | 12:00-13:00 | 1 ura | `routes_offpeak.rou.xml` |
 
-## Učenje (Train)
-
-### `experiment.py` — celoten cevovod (priporočeno)
+## Učenje (`experiment.py`)
 
 Zažene bazno linijo → učenje → evalvacija → shranjevanje v enem klicu.
 
@@ -172,38 +157,12 @@ python src/experiment.py --compare_only
 | `--episode_count N` | Število polnih epizod (1 epizoda = 3600 SB3 korakov) |
 | `--total_timesteps N` | Surovo število SB3 korakov |
 | `--max_hours H` | Zaustavitev po H urah (stenski čas) |
-| `--scenario` | `uniform` / `morning_rush` / `evening_rush` |
+| `--scenario` | `uniform` / `morning_rush` / `evening_rush` / `offpeak` |
 | `--curriculum` | Naključni urni rezini 24h krivulje |
 | `--log_curriculum` | Beleženje RL vs. bazna linija vsako epizodo |
 | `--num_cpus N` | Vzporedni SUMO procesi (za HPC) |
 | `--resume PATH` | Nadaljevanje iz obstoječe kontrolne točke |
 | `--tag OZNAKA` | Oznaka eksperimenta (za identifikacijo) |
-
-### `train.py` — samo učenje (brez evalvacije)
-
-Za produkcijsko učenje z ročnim nadzorom.
-
-```bash
-# Enaka obremenitev (nazaj-združljivo)
-python src/train.py --total_timesteps 500000
-
-# Scenariji koničnih ur (priporočeno za produkcijo)
-python src/train.py --scenario morning_rush
-python src/train.py --scenario evening_rush
-
-# HPC (Vega)
-python src/train.py --scenario morning_rush --total_timesteps 2000000
-
-# Nadaljevanje učenja
-python src/train.py --scenario morning_rush --resume models/ppo_morning_rush_10000_steps.zip
-```
-
-| Zastavica | Opis |
-|-----------|------|
-| `--scenario` | `uniform` / `morning_rush` / `evening_rush` |
-| `--total_timesteps N` | Skupno število SB3 korakov |
-| `--resume PATH` | Pot do kontrolne točke .zip |
-| `--checkpoint_dir` | Mapa za shranjevanje (privzeto `models/`) |
 
 ## Evalvacija
 
@@ -311,8 +270,7 @@ flowchart TD
     subgraph SRC_SETUP ["Priprava okolja"]
         CONFIG["src/config.py\nTLS IDs + imena križišč"]
         DEMANDMATH["src/demand_math.py\ndvokonična 24h krivulja"]
-        GENDEM["src/generate_demand.py\nuniform / rush_hour / double"]
-        GENRUSHDEM["src/generate_rush_demand.py\nmorning / evening / offpeak"]
+        GENDEM["src/generate_demand.py\nuniform + scenariji koničnih ur"]
         TLSPROG["src/tls_programs.py\nobnovitev ne-ciljnih programov"]
         AGENTFIL["src/agent_filter.py\nPettingZoo ovoj → 5 križišč"]
         CUSTOMREW["src/custom_reward.py\nprilagojena nagradna funkcija"]
@@ -320,7 +278,6 @@ flowchart TD
 
     subgraph SRC_TRAIN ["Učenje"]
         EXPERIMENT["src/experiment.py\nceloten cevovod"]
-        TRAIN["src/train.py\nPPO z deljeno politiko"]
     end
 
     subgraph SRC_EVAL ["Evalvacija & Analiza"]
@@ -347,9 +304,9 @@ flowchart TD
 
     OSM -->|"netconvert"| NET
     NET --> CFG
-    DEMANDMATH --> GENRUSHDEM
+    DEMANDMATH --> GENDEM
     GENDEM -->|"generira povpraševanje"| ROU
-    GENRUSHDEM -->|"generira konično povpraševanje"| ROURUSHHOUR
+    GENDEM -->|"generira konično povpraševanje"| ROURUSHHOUR
     ROU --> CFG
     ROURUSHHOUR --> CFG
 
@@ -361,7 +318,6 @@ flowchart TD
     AGENTFIL --> EXPERIMENT
     TLSPROG --> EXPERIMENT
     CUSTOMREW --> EXPERIMENT
-    TRAIN --> EXPERIMENT
 
     EXPERIMENT -->|"bazna linija"| RESCSV
     EXPERIMENT -->|"model"| MODEL
@@ -395,15 +351,13 @@ zeleni-signalj/
 │   └── gtfs/             # LPP avtobusni podatki (neobvezno)
 ├── src/
 │   ├── experiment.py         # Celoten eksperiment (bazna linija → učenje → evalvacija)
-│   ├── train.py              # PPO učni skript (samostojno, z --scenario)
 │   ├── evaluate.py           # Multi-scenarij evalvacija (morning/evening/offpeak)
 │   ├── config.py             # ID-ji križišč, parametri simulacije, PPO hiperparametri
 │   ├── agent_filter.py       # PettingZoo ovoj za filtriranje na 5 križišč
 │   ├── tls_programs.py       # Obnovitev izvornih SUMO programov za neopazovana križišča
 │   ├── custom_reward.py      # Prilagojene nagradne funkcije
 │   ├── demand_math.py        # Dvokonična 24h prometna krivulja (get_vph)
-│   ├── generate_demand.py    # Generiranje prometnega povpraševanja (uniform/rush_hour/double)
-│   ├── generate_rush_demand.py # Konični scenariji iz bimodalnega modela (morning/evening/offpeak)
+│   ├── generate_demand.py    # Generiranje povpraševanja (uniform + scenariji koničnih ur)
 │   ├── schedule_controller.py  # Načrtovalec: RL v konicah, fiksni čas drugače
 │   ├── eval_helper.py        # Pomočnik za evalvacijo v podprocesih (curriculum)
 │   ├── analyze_sim.py        # Analiza SUMO izhoda (teleporti, pretoki)

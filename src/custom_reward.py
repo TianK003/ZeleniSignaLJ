@@ -3,7 +3,7 @@ Zeleni SignaLJ - Custom Reward Functions
 ==========================================
 Drop-in reward functions for sumo-rl.
 
-Usage in train.py:
+Usage in experiment.py:
     from custom_reward import queue_reward, multi_objective_reward
     env = sumo_rl.SumoEnvironment(..., reward_fn=queue_reward)
 """

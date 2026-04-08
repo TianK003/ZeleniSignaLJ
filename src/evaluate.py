@@ -183,7 +183,7 @@ def run_scenario(scenario_name, net_file, model, use_gui=False):
 
     if not os.path.exists(route_file):
         print(f"  WARNING: Route file missing: {route_file}")
-        print(f"           Run: python src/generate_rush_demand.py --scenario {scenario_name}")
+        print(f"           Run: python src/generate_demand.py --scenario {scenario_name}")
         return []
 
     # Set time-of-day for observation encoding

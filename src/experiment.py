@@ -30,6 +30,9 @@ from config import (
     TS_IDS, TS_NAMES, NUM_AGENTS, STEPS_PER_EPISODE,
     NUM_SECONDS, DELTA_TIME, YELLOW_TIME, MIN_GREEN, MAX_GREEN, REWARD_FN,
     TOTAL_DAILY_CARS, WARMUP_SECONDS,
+    MORNING_RUSH_START, MORNING_RUSH_SECONDS,
+    EVENING_RUSH_START, EVENING_RUSH_SECONDS,
+    OFFPEAK_SECONDS,
     LEARNING_RATE, N_STEPS, BATCH_SIZE, N_EPOCHS,
     GAMMA, GAE_LAMBDA, ENT_COEF, CLIP_RANGE,
 )
@@ -45,6 +48,30 @@ from gymnasium import spaces
 
 CURRENT_HOUR = 0.0
 CURRENT_VPH = 1000.0
+
+# ── Scenario presets (route file, duration, time-of-day encoding) ─────────
+SCENARIO_PRESETS = {
+    "morning_rush": {
+        "route_file": "data/routes/routes_morning_rush.rou.xml",
+        "rl_seconds": MORNING_RUSH_SECONDS,   # 14400 (4h)
+        "start_hour": MORNING_RUSH_START,      # 6.0
+    },
+    "evening_rush": {
+        "route_file": "data/routes/routes_evening_rush.rou.xml",
+        "rl_seconds": EVENING_RUSH_SECONDS,    # 14400 (4h)
+        "start_hour": EVENING_RUSH_START,      # 14.0
+    },
+    "offpeak": {
+        "route_file": "data/routes/routes_offpeak.rou.xml",
+        "rl_seconds": OFFPEAK_SECONDS,         # 3600 (1h)
+        "start_hour": 12.0,
+    },
+    "uniform": {
+        "route_file": "data/routes/routes.rou.xml",
+        "rl_seconds": 3600,
+        "start_hour": 0.0,
+    },
+}
 
 class TimeEncodedObservationFunction(ObservationFunction):
     """
@@ -697,14 +724,16 @@ def main():
     )
     parser.add_argument("--net_file", type=str,
                         default="data/networks/ljubljana.net.xml")
-    parser.add_argument("--route_file", type=str,
-                        default="data/routes/routes.rou.xml")
+    parser.add_argument("--route_file", type=str, default=None,
+                        help="Override route file (ignores --scenario preset).")
     parser.add_argument("--total_timesteps", type=int, default=None,
                         help="Total SB3 timesteps (1 episode = 3600 steps)")
     parser.add_argument("--episode_count", type=int, default=None,
                         help="Number of full episodes to train (converted to timesteps)")
     parser.add_argument("--max_hours", type=float, default=None)
-    parser.add_argument("--num_seconds", type=int, default=3600)
+    parser.add_argument("--num_seconds", type=int, default=None,
+                        help="Total simulation duration (seconds). "
+                             "Defaults to scenario rl_seconds + WARMUP_SECONDS.")
     parser.add_argument("--tag", type=str, default="")
     parser.add_argument("--compare_only", action="store_true")
     parser.add_argument("--curriculum", action="store_true", 
@@ -716,16 +745,24 @@ def main():
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a checkpoint .zip file to resume training from.")
     parser.add_argument("--scenario", type=str, default="uniform",
-                        choices=["morning_rush", "evening_rush", "uniform"],
-                        help="Demand scenario label. Stored in meta.json; also sets "
-                             "num_seconds if not explicitly provided.")
+                        choices=list(SCENARIO_PRESETS.keys()),
+                        help="Demand scenario. Sets route_file, num_seconds, and "
+                             "CURRENT_HOUR from the scenario preset. "
+                             "Use --route_file to override.")
     args = parser.parse_args()
 
-    # If scenario is a rush-hour preset and num_seconds was not explicitly overridden,
-    # set the appropriate episode duration.
-    _SCENARIO_SECONDS = {"morning_rush": 14400, "evening_rush": 14400, "uniform": 3600}
-    if args.num_seconds == 3600 and args.scenario in ("morning_rush", "evening_rush"):
-        args.num_seconds = _SCENARIO_SECONDS[args.scenario] + WARMUP_SECONDS
+    # Resolve scenario preset
+    preset = SCENARIO_PRESETS[args.scenario]
+
+    if args.route_file is None:
+        args.route_file = preset["route_file"]
+
+    if args.num_seconds is None:
+        args.num_seconds = preset["rl_seconds"] + WARMUP_SECONDS
+
+    if not args.curriculum:
+        global CURRENT_HOUR
+        CURRENT_HOUR = preset["start_hour"]
 
     if args.compare_only:
         compare_experiments()
@@ -775,15 +812,21 @@ def main():
     with open(os.path.join(run_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
-    # Ensure route file exists for evaluation
+    # Ensure route file exists
     if not os.path.exists(args.route_file):
-        print(f"\n  [Setup] Route file '{args.route_file}' not found.")
-        print("  Generating an average traffic demand for testing (Phase 1 & 3)...")
-        eval_vph = get_vph(12.0, TOTAL_DAILY_CARS)
-        tmp_trips = args.route_file.replace(".rou.xml", "_eval_trips.xml")
-        if tmp_trips == args.route_file: tmp_trips += "_trips.xml"
-        os.makedirs(os.path.dirname(args.route_file), exist_ok=True)
-        write_demand_xml([(0, args.num_seconds, eval_vph/3600.0)], args.net_file, tmp_trips, args.route_file)
+        if args.scenario in ("morning_rush", "evening_rush", "offpeak"):
+            print(f"\n  ERROR: Route file not found: {args.route_file}")
+            print(f"  Generate it first:")
+            print(f"    python src/generate_demand.py --scenario {args.scenario}")
+            raise SystemExit(1)
+        else:
+            print(f"\n  [Setup] Route file '{args.route_file}' not found.")
+            print("  Generating an average traffic demand for testing...")
+            eval_vph = get_vph(12.0, TOTAL_DAILY_CARS)
+            tmp_trips = args.route_file.replace(".rou.xml", "_eval_trips.xml")
+            if tmp_trips == args.route_file: tmp_trips += "_trips.xml"
+            os.makedirs(os.path.dirname(args.route_file), exist_ok=True)
+            write_demand_xml([(0, args.num_seconds, eval_vph/3600.0)], args.net_file, tmp_trips, args.route_file)
 
     # Phase 1: Baseline
     print("\n[1/3] Running fixed-time baseline (real signal programs)...")
