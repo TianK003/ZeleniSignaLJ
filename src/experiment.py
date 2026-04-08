@@ -597,6 +597,7 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
         model.learn(
             total_timesteps=total_timesteps,
             callback=callbacks,
+            reset_num_timesteps=False if resume_model_path else True,
         )
 
     train_time = time.time() - t_start
