@@ -61,13 +61,20 @@ pip install -r requirements.txt
 # 3. Preverjanje namestitve
 python -c "import sumo_rl; print('sumo-rl', sumo_rl.__version__)"
 
-# 4. Generiranje prometa
+# 4a. Generiranje enakomerne prometne obremenitve (za testiranje)
 python src/generate_demand.py --profile uniform --duration 3600 --peak_vph 800
 
-# 5. Učenje (lokalno, 50 epizod ~ 4 min)
+# 4b. Generiranje prometnih scenarijev koničnih ur (za resno učenje)
+python src/generate_rush_demand.py --scenario all
+# Ustvari: routes_morning_rush.rou.xml, routes_evening_rush.rou.xml, routes_offpeak.rou.xml
+
+# 5. Učenje — enaka prometna obremenitev (lokalno, 50 epizod ~ 4 min)
 python src/experiment.py --episode_count 50 --tag local_50ep
 
-# 5b. Napredno učenje po celem dnevu (Curriculum)
+# 5b. Učenje — scenarij jutranje konice (priporočeno za produkcijo)
+python src/experiment.py --scenario morning_rush --episode_count 50 --tag jutro_50ep
+
+# 5c. Napredno učenje po celem dnevu (Curriculum)
 python src/experiment.py --episode_count 50 --curriculum --tag napredno_ucenje
 
 # 6. Primerjava rezultatov in nadzorna plošča
@@ -75,20 +82,182 @@ python src/experiment.py --compare_only
 python src/dashboard.py
 # Odpri results/dashboard.html v brskalniku
 
-# 7. Evalvacija specifičnega modela
+# 7. Evalvacija modela po vseh scenarijih koničnih ur
 python src/evaluate.py --model results/experiments/XXXXX/ppo_shared_policy.zip
+python src/evaluate.py --model models/ppo_morning_rush_final.zip --scenario morning_rush
+```
+
+## Generiranje prometnega povpraševanja
+
+### Enaka obremenitev (`generate_demand.py`)
+
+Za testiranje in odpravljanje napak. Trije profili:
+
+```bash
+# Enakomerna obremenitev (stalna, za dimne teste)
+python src/generate_demand.py --profile uniform --duration 3600 --peak_vph 800
+
+# Ena konica (jutranja ali večerna špica, 4 ure)
+python src/generate_demand.py --profile rush_hour --duration 14400 --peak_vph 1800
+
+# Dve konici (jutro + večer, cel dan)
+python src/generate_demand.py --profile double --duration 28800 --peak_vph 1800
+```
+
+| Parameter | Opis |
+|-----------|------|
+| `--profile` | `uniform` / `rush_hour` / `double` |
+| `--duration` | Trajanje simulacije v sekundah |
+| `--peak_vph` | Koničen pretok v vozilih/uro |
+| `--fringe_factor` | Verjetnost izvorov na robovih (privzeto 5.0) |
+
+### Scenariji koničnih ur (`generate_rush_demand.py`)
+
+Realistični scenariji, ki temeljijo na dvokoničnem matematičnem modelu prometnega povpraševanja čez 24 ur (8:00 jutranja konica + 16:00 večerna konica). Modelira tudi smer prometnega toka: jutranja konica ima 70 % promet usmerjen v center, večerna konica pa 70 % iz centra.
+
+```bash
+# Vsi scenariji naenkrat (priporočeno)
+python src/generate_rush_demand.py --scenario all
+
+# Posamezni scenariji
+python src/generate_rush_demand.py --scenario morning_rush   # 06:00-10:00, 4h, bimodalna krivulja
+python src/generate_rush_demand.py --scenario evening_rush   # 14:00-18:00, 4h, bimodalna krivulja
+python src/generate_rush_demand.py --scenario offpeak        # 12:00-13:00, 1h, referenčni scenarij
+```
+
+| Scenarij | Okno | Trajanje | Datoteka |
+|----------|------|----------|---------|
+| `morning_rush` | 06:00-10:00 | 4 ure | `routes_morning_rush.rou.xml` |
+| `evening_rush` | 14:00-18:00 | 4 ure | `routes_evening_rush.rou.xml` |
+| `offpeak` | 12:00-13:00 | 1 ura | `routes_offpeak.rou.xml` |
+
+## Učenje (Train)
+
+### `experiment.py` — celoten cevovod (priporočeno)
+
+Zažene bazno linijo → učenje → evalvacija → shranjevanje v enem klicu.
+
+```bash
+# Osnovna uporaba
+python src/experiment.py --episode_count 50 --tag local_50ep
+
+# Scenariji koničnih ur (zahteva routes_morning_rush.rou.xml)
+python src/experiment.py --scenario morning_rush --episode_count 100 --tag jutro_100ep
+python src/experiment.py --scenario evening_rush --episode_count 100 --tag vecer_100ep
+
+# Nadaljevanje iz kontrolne točke
+python src/experiment.py --episode_count 100 --resume results/experiments/XXXXX/ppo_shared_policy.zip
+
+# Curriculum learning — naključni urni rezini čez cel dan
+python src/experiment.py --episode_count 200 --curriculum --tag curriculum_200ep
+
+# Curriculum z beleženjem napredka (primerja RL vs bazna linija vsako epizodo)
+python src/experiment.py --episode_count 100 --curriculum --log_curriculum --tag curriculum_log
+
+# Vzporedno učenje na več CPE (za HPC)
+python src/experiment.py --episode_count 500 --num_cpus 4 --tag hpc_500ep
+
+# Časovna omejitev (npr. 1 ura učenja)
+python src/experiment.py --max_hours 1.0 --tag 1h_local
+
+# Surovi timesteps (namesto epizod)
+python src/experiment.py --total_timesteps 180000 --tag raw_50ep
+
+# Samo primerjava obstoječih eksperimentov
+python src/experiment.py --compare_only
+```
+
+| Zastavica | Opis |
+|-----------|------|
+| `--episode_count N` | Število polnih epizod (1 epizoda = 3600 SB3 korakov) |
+| `--total_timesteps N` | Surovo število SB3 korakov |
+| `--max_hours H` | Zaustavitev po H urah (stenski čas) |
+| `--scenario` | `uniform` / `morning_rush` / `evening_rush` |
+| `--curriculum` | Naključni urni rezini 24h krivulje |
+| `--log_curriculum` | Beleženje RL vs. bazna linija vsako epizodo |
+| `--num_cpus N` | Vzporedni SUMO procesi (za HPC) |
+| `--resume PATH` | Nadaljevanje iz obstoječe kontrolne točke |
+| `--tag OZNAKA` | Oznaka eksperimenta (za identifikacijo) |
+
+### `train.py` — samo učenje (brez evalvacije)
+
+Za produkcijsko učenje z ročnim nadzorom.
+
+```bash
+# Enaka obremenitev (nazaj-združljivo)
+python src/train.py --total_timesteps 500000
+
+# Scenariji koničnih ur (priporočeno za produkcijo)
+python src/train.py --scenario morning_rush
+python src/train.py --scenario evening_rush
+
+# HPC (Vega)
+python src/train.py --scenario morning_rush --total_timesteps 2000000
+
+# Nadaljevanje učenja
+python src/train.py --scenario morning_rush --resume models/ppo_morning_rush_10000_steps.zip
+```
+
+| Zastavica | Opis |
+|-----------|------|
+| `--scenario` | `uniform` / `morning_rush` / `evening_rush` |
+| `--total_timesteps N` | Skupno število SB3 korakov |
+| `--resume PATH` | Pot do kontrolne točke .zip |
+| `--checkpoint_dir` | Mapa za shranjevanje (privzeto `models/`) |
+
+## Evalvacija
+
+Primerja naučen model z bazno linijo (fiksni časi) po treh scenarijih.
+
+```bash
+# Evalvacija čez vse tri scenarije
+python src/evaluate.py --model results/experiments/XXXXX/ppo_shared_policy.zip
+
+# Samo en scenarij
+python src/evaluate.py --model models/ppo_morning_rush_final.zip --scenario morning_rush
+
+# Z vizualizacijo SUMO GUI
+python src/evaluate.py --model models/ppo_morning_rush_final.zip --gui
+
+# Samo bazna linija (brez modela)
+python src/evaluate.py
+```
+
+Izhod: `results/rush_hour_comparison.csv` (primerjava po scenarijih) + `results/comparison_summary.csv` (po križiščih).
+
+## Načrtovalec (Schedule Controller)
+
+`schedule_controller.py` implementira produkcijsko strategijo: RL agent se aktivira samo v koničnih urah, sicer tečejo izvorni SUMO programi.
+
+| Čas | Način |
+|-----|-------|
+| 00:00-06:00 | Fiksni čas (noč) |
+| 06:00-10:00 | RL agent (jutranja konica) |
+| 10:00-14:00 | Fiksni čas (poldnevi) |
+| 14:00-18:00 | RL agent (večerna konica) |
+| 18:00-24:00 | Fiksni čas (večer/noč) |
+
+```python
+from schedule_controller import ScheduleController
+ctrl = ScheduleController(
+    model_morning="models/ppo_morning_rush_final.zip",
+    model_evening="models/ppo_evening_rush_final.zip"
+)
+ctrl.print_schedule()
+mode = ctrl.get_mode(hour=7.5)   # -> "rl_morning"
 ```
 
 ## Parametri simulacije
 
 | Parameter | Vrednost | Opis |
 |-----------|----------|------|
-| `num_seconds` | 3600 | Trajanje ene epizode simulacije (1 ura) |
+| `num_seconds` | 3600 + 600 | Trajanje epizode: 600s ogrevanje + 1h RL |
 | `delta_time` | 5 | Sekunde med odločitvami agenta (frekvenca akcij) |
 | `yellow_time` | 2 | Trajanje rumene faze med preklopom zelene |
 | `min_green` | 10 | Minimalen čas zelene faze pred preklopom |
 | `max_green` | 90 | Maksimalen čas zelene faze pred ponovnim odločanjem |
 | `reward_fn` | "queue" | Nagrada = negativno število ustavljenih vozil na korak |
+| `WARMUP_SECONDS` | 600 | 10 min mehanske SUMO simulacije pred RL prevzemom |
 
 ## PPO hiperparametri
 
@@ -105,9 +274,9 @@ python src/evaluate.py --model results/experiments/XXXXX/ppo_shared_policy.zip
 
 ## Napredno učenje (Curriculum Learning)
 
-Z uporabo zastavice `--curriculum` lahko poženemo pametnejši način učenja. Algoritem naključno "skače" po različnih urah dneva. Sistem samodejno izračuna, koliko avtomobilov je na cesti ob izbrani uri (8.00 in 16.00 imata vrhunec, ponoči so ceste prazne, skupaj v dnevu prevozi 400.000 avtov - nastavljivo v `config.py`). 
+Z uporabo zastavice `--curriculum` algoritem naključno vzorči različne ure dneva. Sistem izračuna prometni pretok iz dvokoničnega matematičnega modela (`demand_math.get_vph`): konici ob 8:00 in 16:00, ponoči prazne ceste. Skupno 40.000 vozil/dan (nastavljivo v `config.py` kot `TOTAL_DAILY_CARS`).
 
-Model nato vsakič izvede natanko 1 uro simulacije in se uči na tem delčku dneva. Ker tako ves čas vidi različne scenarije in sproti osvežuje križišča, se nauči učinkovitih splošnih pravil in ne obvisi v trajnem zastoju.
+Model vsako epizodo vidi drugačen scenarij in se tako nauči splošnih pravil za različne prometne obremenitve. Z `--log_curriculum` dobimo podroben zapis napredka (primerjava RL vs. bazna linija za vsako epizodo) v `curriculum_progress.txt`.
 
 ## Razumevanje korakov (timesteps)
 
@@ -136,11 +305,14 @@ flowchart TD
         NET["data/networks/ljubljana.net.xml\nSUMO omrežje"]
         CFG["data/networks/ljubljana.sumocfg\nSUMO konfiguracija"]
         ROU["data/routes/routes.rou.xml\nPrometno povpraševanje"]
+        ROURUSHHOUR["data/routes/routes_*_rush.rou.xml\nKonični scenariji"]
     end
 
     subgraph SRC_SETUP ["Priprava okolja"]
         CONFIG["src/config.py\nTLS IDs + imena križišč"]
+        DEMANDMATH["src/demand_math.py\ndvokonična 24h krivulja"]
         GENDEM["src/generate_demand.py\nuniform / rush_hour / double"]
+        GENRUSHDEM["src/generate_rush_demand.py\nmorning / evening / offpeak"]
         TLSPROG["src/tls_programs.py\nobnovitev ne-ciljnih programov"]
         AGENTFIL["src/agent_filter.py\nPettingZoo ovoj → 5 križišč"]
         CUSTOMREW["src/custom_reward.py\nprilagojena nagradna funkcija"]
@@ -152,9 +324,11 @@ flowchart TD
     end
 
     subgraph SRC_EVAL ["Evalvacija & Analiza"]
-        EVALUATE["src/evaluate.py\nKPI primerjava"]
+        EVALUATE["src/evaluate.py\nKPI primerjava po scenarijih"]
+        EVALHELPER["src/eval_helper.py\npomočnik za podprocese"]
         ANALYZE["src/analyze_sim.py\nteleporti, pretoki, statistika"]
         DASHBOARD["src/dashboard.py\nHTML nadzorna plošča"]
+        SCHEDCTRL["src/schedule_controller.py\načrtovalec konic RL/fiksni"]
     end
 
     subgraph HPC ["HPC — Vega superračunalnik"]
@@ -167,13 +341,17 @@ flowchart TD
         TRAINLOG["results/experiments/ID/\ntraining_log.csv"]
         RESCSV["results/experiments/ID/\nresults.csv"]
         METAJSON["results/experiments/ID/\nmeta.json"]
+        RUSHCSV["results/rush_hour_comparison.csv"]
         DASH["results/dashboard.html"]
     end
 
     OSM -->|"netconvert"| NET
     NET --> CFG
+    DEMANDMATH --> GENRUSHDEM
     GENDEM -->|"generira povpraševanje"| ROU
+    GENRUSHDEM -->|"generira konično povpraševanje"| ROURUSHHOUR
     ROU --> CFG
+    ROURUSHHOUR --> CFG
 
     CONFIG --> AGENTFIL
     CONFIG --> TLSPROG
@@ -191,11 +369,16 @@ flowchart TD
     EXPERIMENT -->|"metapodatki"| METAJSON
 
     MODEL --> EVALUATE
-    EVALUATE -->|"KPI"| RESCSV
+    ROURUSHHOUR --> EVALUATE
+    EVALUATE -->|"KPI po scenarijih"| RUSHCSV
+    EVALHELPER --> EXPERIMENT
 
     RESCSV --> DASHBOARD
+    RUSHCSV --> DASHBOARD
     ANALYZE --> DASHBOARD
     DASHBOARD --> DASH
+
+    MODEL --> SCHEDCTRL
 
     DEF --> SLURM
     SLURM -->|"zažene na Vegi"| EXPERIMENT
@@ -211,16 +394,20 @@ zeleni-signalj/
 │   ├── routes/           # Prometno povpraševanje .rou.xml
 │   └── gtfs/             # LPP avtobusni podatki (neobvezno)
 ├── src/
-│   ├── experiment.py     # Celoten eksperiment (bazna linija → učenje → evalvacija)
-│   ├── train.py          # PPO učni skript (samostojno)
-│   ├── evaluate.py       # Evalvacija modela in primerjava KPI
-│   ├── config.py         # ID-ji križišč in imena
-│   ├── agent_filter.py   # PettingZoo ovoj za filtriranje na 5 križišč
-│   ├── tls_programs.py   # Obnovitev izvornih SUMO programov za neopazovana križišča
-│   ├── custom_reward.py  # Prilagojene nagradne funkcije
-│   ├── generate_demand.py # Generiranje prometnega povpraševanja
-│   ├── analyze_sim.py    # Analiza SUMO izhoda (teleporti, pretoki)
-│   └── dashboard.py      # Generiranje HTML nadzorne plošče
+│   ├── experiment.py         # Celoten eksperiment (bazna linija → učenje → evalvacija)
+│   ├── train.py              # PPO učni skript (samostojno, z --scenario)
+│   ├── evaluate.py           # Multi-scenarij evalvacija (morning/evening/offpeak)
+│   ├── config.py             # ID-ji križišč, parametri simulacije, PPO hiperparametri
+│   ├── agent_filter.py       # PettingZoo ovoj za filtriranje na 5 križišč
+│   ├── tls_programs.py       # Obnovitev izvornih SUMO programov za neopazovana križišča
+│   ├── custom_reward.py      # Prilagojene nagradne funkcije
+│   ├── demand_math.py        # Dvokonična 24h prometna krivulja (get_vph)
+│   ├── generate_demand.py    # Generiranje prometnega povpraševanja (uniform/rush_hour/double)
+│   ├── generate_rush_demand.py # Konični scenariji iz bimodalnega modela (morning/evening/offpeak)
+│   ├── schedule_controller.py  # Načrtovalec: RL v konicah, fiksni čas drugače
+│   ├── eval_helper.py        # Pomočnik za evalvacijo v podprocesih (curriculum)
+│   ├── analyze_sim.py        # Analiza SUMO izhoda (teleporti, pretoki)
+│   └── dashboard.py          # Generiranje HTML nadzorne plošče
 ├── hpc/
 │   ├── traffic_rl.def    # Apptainer definicija vsebnika
 │   └── submit_train.sh   # SLURM skripta za Vego
@@ -228,6 +415,8 @@ zeleni-signalj/
 ├── logs/                 # Dnevniki učenja
 └── results/
     ├── experiments/      # Rezultati po eksperimentih (meta.json, results.csv, model)
+    ├── rush_hour_comparison.csv  # KPI primerjava po scenarijih koničnih ur
+    ├── comparison_summary.csv    # KPI po posameznih križiščih
     └── dashboard.html    # Interaktivna nadzorna plošča
 ```
 

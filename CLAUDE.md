@@ -71,6 +71,11 @@ netconvert --osm-files data/osm/bleiweisova.osm \
 - **Parameter-sharing PPO** via SuperSuit: the 5 target traffic signals share one policy network. Each signal is treated as a separate sub-environment in a vectorized env. Non-target TLS have their original SUMO programs restored via `src/tls_programs.py` and are monkey-patched so sumo-rl cannot override them. This is critical — without filtering, all 37 TLS share one policy and performance is terrible.
 - **Non-target TLS handling** (`src/tls_programs.py`): sumo-rl's `build_phases()` replaces ALL TLS programs on init. To keep non-target TLS running their real signal programs, we: (1) parse original programs from .net.xml before env creation, (2) after each `env.reset()`, restore them via TraCI `setProgramLogic` + `setProgram`, (3) monkey-patch `set_next_phase` to a no-op and `update` to only increment the time counter. Without this, non-target TLS would be stuck on phase 0 (action=0 = "keep current green phase", NOT "run default program").
 - **AgentFilterWrapper** (`src/agent_filter.py`): PettingZoo parallel wrapper that exposes only the 5 target agents to the RL algorithm. On `reset()`, it calls `restore_non_target_programs()`. Non-target agents receive `default_action=0` which is ignored by their monkey-patched `set_next_phase`.
+- **TimeEncodedObservationFunction** (`src/experiment.py`): Extended observation function that appends `sin(2π·t/86400)` and `cos(2π·t/86400)` to the base observation vector. This gives the agent a smooth, cyclical perception of time-of-day. The global `CURRENT_HOUR` variable in `experiment.py` must be set before each episode (it's set automatically by `experiment.py` and `train.py` based on the scenario). All training, evaluation, and schedule controller use this observation class.
+- **`demand_math.py`** (`src/demand_math.py`): Bimodal 24h traffic curve. `get_vph(hour, total_daily_cars)` returns vehicles/hour at a given real-world hour. Two Gaussian peaks at 08:00 (morning rush, σ=1.5h) and 16:00 (evening rush, σ=2.0h) plus a small base noise. Numerically integrates the shape to guarantee exactly `total_daily_cars` vehicles in 24h. Used by curriculum learning and `generate_rush_demand.py`.
+- **`generate_rush_demand.py`** (`src/generate_rush_demand.py`): Generates realistic rush-hour route files using the bimodal curve. Three scenarios: `morning_rush` (06:00-10:00, 4h, 70% inbound bias), `evening_rush` (14:00-18:00, 4h, 70% outbound bias), `offpeak` (12:00-13:00, 1h, symmetric). Inbound/outbound directional asymmetry is approximated by merging two trip batches with different `fringe_factor` values. Output files: `routes_morning_rush.rou.xml`, `routes_evening_rush.rou.xml`, `routes_offpeak.rou.xml`.
+- **`schedule_controller.py`** (`src/schedule_controller.py`): Production deployment module. `ScheduleController` loads two PPO models (morning + evening) and dispatches to the correct one based on the hour of day. Rush hour windows (06:00-10:00, 14:00-18:00) use RL; all other times use fixed-time programs. Can run full simulation episodes with time-aware control via `run_episode()`.
+- **`eval_helper.py`** (`src/eval_helper.py`): Subprocess helper for safe evaluation during curriculum learning. Called by `experiment.py` via `subprocess.run()` to run baseline and RL evaluation in separate SUMO processes (libsumo cannot be re-initialized in the same process).
 - **Phase-based control**: agents select from predefined valid phase combinations (not individual lights)
 - **Queue-length penalty** as primary reward function: `R(t) = -sum(halted_vehicles)`
 - **Baseline**: `fixed_ts=True` in SumoEnvironment — runs real OSM signal programs untouched
@@ -79,12 +84,15 @@ netconvert --osm-files data/osm/bleiweisova.osm \
 ## Simulation Parameters
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `num_seconds` | 3600 | Duration of one simulation episode (1 hour) |
+| `num_seconds` | 4200 | Total sim duration = `WARMUP_SECONDS` (600) + `RL_SECONDS` (3600) |
+| `WARMUP_SECONDS` | 600 | 10 min of fixed-time SUMO before RL takes over (lets traffic build up) |
+| `RL_SECONDS` | 3600 | Duration of RL-controlled phase per episode (1 hour) |
 | `delta_time` | 5 | Seconds between agent decisions (action frequency) |
 | `yellow_time` | 2 | Duration of yellow phase between green switches |
 | `min_green` | 10 | Minimum green phase duration before switching |
 | `max_green` | 90 | Maximum green phase duration before forced re-decision |
 | `reward_fn` | "queue" | Reward = negative number of halted vehicles per step |
+| `TOTAL_DAILY_CARS` | 40000 | Total vehicles in 24h bimodal curve (configurable in `config.py`) |
 
 ## PPO Hyperparameters
 | Parameter | Value | Description |
@@ -140,10 +148,14 @@ n_steps = 720 → 720 * 5 agents = 3600 timesteps = exactly 1 episode per PPO up
 - SUMO network: `data/networks/ljubljana.net.xml`
 - SUMO config: `data/networks/ljubljana.sumocfg`
 - Routes: `data/routes/routes.rou.xml`
-- Intersection config: `src/config.py` (TS_IDS, TS_NAMES)
-- Training: `src/train.py` (standalone), `src/experiment.py` (full pipeline)
-- Evaluation: `src/evaluate.py`
+- Intersection config: `src/config.py` (TS_IDS, TS_NAMES, all sim/PPO params, rush-hour windows)
+- Training: `src/train.py` (standalone, with `--scenario`), `src/experiment.py` (full pipeline)
+- Evaluation: `src/evaluate.py` (multi-scenario: morning_rush, evening_rush, offpeak; outputs `results/rush_hour_comparison.csv`)
 - Demand generation: `src/generate_demand.py` (uniform, rush_hour, double profiles)
+- Rush-hour demand: `src/generate_rush_demand.py` (bimodal curve → morning_rush, evening_rush, offpeak route files)
+- Bimodal traffic curve: `src/demand_math.py` (get_vph(hour, total_daily_cars))
+- Schedule controller: `src/schedule_controller.py` (time-of-day dispatch: RL in rush hours, fixed-time otherwise)
+- Curriculum eval helper: `src/eval_helper.py` (subprocess helper for safe baseline/RL eval during curriculum)
 - Simulation analysis: `src/analyze_sim.py` (teleports, edge flows, trip stats)
 - Dashboard: `src/dashboard.py` (generates results/dashboard.html)
 - Custom rewards: `src/custom_reward.py`
@@ -164,8 +176,12 @@ source .venv/bin/activate
 # Enable fast SUMO (skip TraCI socket overhead)
 export LIBSUMO_AS_TRACI=1
 
-# Generate traffic demand
+# Generate uniform traffic demand (for smoke tests)
 python src/generate_demand.py --profile uniform --duration 3600 --peak_vph 800
+
+# Generate rush-hour route files (required for rush-hour training/eval)
+python src/generate_rush_demand.py --scenario all
+# -> data/routes/routes_morning_rush.rou.xml, routes_evening_rush.rou.xml, routes_offpeak.rou.xml
 
 # Run simulation sanity check
 sumo -c data/networks/ljubljana.sumocfg
@@ -174,13 +190,28 @@ python src/analyze_sim.py
 # Smoke test (quick, ~5min)
 python src/experiment.py --episode_count 10 --tag smoke_test
 
-# Train for 50 episodes (~4 min locally)
+# Train for 50 episodes on uniform demand (~4 min locally)
 python src/experiment.py --episode_count 50 --tag local_50ep
 
-# 1-hour training run
+# Train on morning rush scenario (requires generate_rush_demand.py first)
+python src/experiment.py --scenario morning_rush --episode_count 100 --tag jutro_100ep
+
+# Train with curriculum learning (random hour slices across full day)
+python src/experiment.py --episode_count 200 --curriculum --tag curriculum_200ep
+
+# Train with curriculum + per-episode logging (slow but detailed)
+python src/experiment.py --episode_count 100 --curriculum --log_curriculum --tag curriculum_log
+
+# Parallel training on N CPUs (for HPC)
+python src/experiment.py --episode_count 500 --num_cpus 4 --tag hpc_500ep
+
+# Resume training from checkpoint
+python src/experiment.py --episode_count 100 --resume results/experiments/XXXXX/ppo_shared_policy.zip
+
+# 1-hour training run (wall-time limit)
 python src/experiment.py --max_hours 1.0 --tag 1h_local
 
-# You can still use raw timesteps (3600 per episode with 5 agents)
+# Raw timesteps (3600 per episode with 5 agents)
 python src/experiment.py --total_timesteps 180000 --tag raw_50ep
 
 # Compare all experiments
@@ -189,8 +220,16 @@ python src/experiment.py --compare_only
 # Generate dashboard
 python src/dashboard.py
 
-# Evaluate specific model
+# Evaluate model across all rush-hour scenarios
 python src/evaluate.py --model results/experiments/XXXXX/ppo_shared_policy.zip
+# -> results/rush_hour_comparison.csv, results/comparison_summary.csv
+
+# Evaluate only one scenario
+python src/evaluate.py --model models/ppo_morning_rush_final.zip --scenario morning_rush
+
+# Standalone train.py (no baseline/eval phases)
+python src/train.py --scenario morning_rush --total_timesteps 500000
+python src/train.py --scenario morning_rush --resume models/ppo_morning_rush_10000_steps.zip
 
 # Open SUMO GUI
 sumo-gui data/networks/ljubljana.sumocfg
