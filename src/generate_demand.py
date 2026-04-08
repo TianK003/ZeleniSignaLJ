@@ -50,16 +50,32 @@ def generate_demand_profile(duration, peak_vph, interval=300):
     return bins
 
 
+def get_random_trips_path():
+    import shutil
+    sumo_homes = [
+        os.environ.get("SUMO_HOME", ""),
+        os.path.expanduser("~/sumo_src"),
+        "/usr/share/sumo",
+        "/usr/local/share/sumo"
+    ]
+    for sh in sumo_homes:
+        if not sh: continue
+        path = os.path.join(sh, "tools", "randomTrips.py")
+        if os.path.exists(path): return path
+        
+    path_in_path = shutil.which("randomTrips.py")
+    if path_in_path: return path_in_path
+    return None
+
 def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=5):
     """
     Write trips XML with time-varying demand using randomTrips.py per bin,
     then merge and route.
     """
-    sumo_home = os.environ.get("SUMO_HOME", "/usr/share/sumo")
-    random_trips = os.path.join(sumo_home, "tools", "randomTrips.py")
+    random_trips = get_random_trips_path()
 
-    if not os.path.exists(random_trips):
-        print(f"ERROR: randomTrips.py not found at {random_trips}")
+    if not random_trips:
+        print("ERROR: randomTrips.py not found in SUMO_HOME, ~/sumo_src, or PATH.")
         print("Set SUMO_HOME environment variable correctly.")
         sys.exit(1)
 
@@ -210,10 +226,9 @@ def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offse
     Does NOT run duarouter -- call _route_trips() separately.
     Returns total vehicle count.
     """
-    sumo_home = os.environ.get("SUMO_HOME", "/usr/share/sumo")
-    random_trips = os.path.join(sumo_home, "tools", "randomTrips.py")
-    if not os.path.exists(random_trips):
-        print(f"ERROR: randomTrips.py not found at {random_trips}")
+    random_trips = get_random_trips_path()
+    if not random_trips:
+        print("ERROR: randomTrips.py not found in SUMO_HOME, ~/sumo_src, or PATH.")
         print("Set SUMO_HOME correctly, e.g.: export SUMO_HOME=/usr/share/sumo")
         sys.exit(1)
 
