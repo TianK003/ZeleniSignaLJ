@@ -24,7 +24,7 @@ import pandas as pd
 import sumo_rl
 import supersuit as ss
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 
 from config import (
     TS_IDS, TS_NAMES, NUM_AGENTS, STEPS_PER_EPISODE,
@@ -442,7 +442,7 @@ def run_evaluation(net_file, route_file, num_seconds, model):
 # ── Training ──
 
 def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
-              max_seconds=None, run_curriculum=False, log_curriculum=False, num_cpus=1):
+              max_seconds=None, run_curriculum=False, log_curriculum=False, num_cpus=1, resume_model_path=None):
     """
     Train PPO with parameter sharing via SuperSuit.
     All traffic signals share one policy (standard IPPO approach).
@@ -469,25 +469,52 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     print(f"  Action space: {env.action_space}")
 
     # All hyperparameters from src/config.py — single source of truth
-    model = PPO(
-        "MlpPolicy",
-        env,
-        learning_rate=LEARNING_RATE,
-        n_steps=N_STEPS,
-        batch_size=BATCH_SIZE,
-        n_epochs=N_EPOCHS,
-        gamma=GAMMA,
-        gae_lambda=GAE_LAMBDA,
-        ent_coef=ENT_COEF,
-        clip_range=CLIP_RANGE,
-        verbose=0,
-        tensorboard_log=os.path.join(run_dir, "tb_logs"),
-    )
+    if resume_model_path:
+        print(f"  Resuming model from {resume_model_path}...")
+        model = PPO.load(
+            resume_model_path,
+            env=env,
+            custom_objects={
+                "learning_rate": LEARNING_RATE,
+                "n_steps": N_STEPS,
+                "batch_size": BATCH_SIZE,
+                "n_epochs": N_EPOCHS,
+                "gamma": GAMMA,
+                "gae_lambda": GAE_LAMBDA,
+                "ent_coef": ENT_COEF,
+                "clip_range": CLIP_RANGE
+            }
+        )
+        model.tensorboard_log = os.path.join(run_dir, "tb_logs")
+    else:
+        model = PPO(
+            "MlpPolicy",
+            env,
+            learning_rate=LEARNING_RATE,
+            n_steps=N_STEPS,
+            batch_size=BATCH_SIZE,
+            n_epochs=N_EPOCHS,
+            gamma=GAMMA,
+            gae_lambda=GAE_LAMBDA,
+            ent_coef=ENT_COEF,
+            clip_range=CLIP_RANGE,
+            verbose=0,
+            tensorboard_log=os.path.join(run_dir, "tb_logs"),
+        )
 
     # Callbacks
     log_path = os.path.join(run_dir, "training_log.csv")
     callbacks = [TrainingLogCallback(log_path, print_freq=5000,
                                      steps_per_episode=STEPS_PER_EPISODE)]
+                                     
+    # Checkpoint every ~10 episodes worth of timesteps to prevent data loss
+    checkpoint_freq = max(10000, (36000 * num_cpus) // NUM_AGENTS) 
+    checkpoint_callback = CheckpointCallback(
+        save_freq=checkpoint_freq,
+        save_path=os.path.join(run_dir, "checkpoints"),
+        name_prefix="ppo_model"
+    )
+    callbacks.append(checkpoint_callback)
     if max_seconds:
         callbacks.append(TimeLimitCallback(max_seconds))
 
@@ -669,6 +696,8 @@ def main():
                         help="During curriculum learning, exact evaluate against baseline every episode and append to log file.")
     parser.add_argument("--num_cpus", type=int, default=1,
                         help="Number of independent parallel SUMO CPU processes (useful for HPCs like Vega).")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to a checkpoint .zip file to resume training from.")
     args = parser.parse_args()
 
     if args.compare_only:
@@ -742,7 +771,7 @@ def main():
     print("\n[2/3] Training PPO agents...")
     model, train_time = train_ppo(
         args.net_file, args.route_file, args.num_seconds,
-        args.total_timesteps, run_dir, max_seconds, args.curriculum, args.log_curriculum, args.num_cpus
+        args.total_timesteps, run_dir, max_seconds, args.curriculum, args.log_curriculum, args.num_cpus, args.resume
     )
     meta["train_time_s"] = train_time
     meta["actual_timesteps"] = model.num_timesteps
