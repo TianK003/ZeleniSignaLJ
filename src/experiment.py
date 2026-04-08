@@ -48,6 +48,9 @@ from gymnasium import spaces
 
 CURRENT_HOUR = 0.0
 CURRENT_VPH = 1000.0
+ACTIVE_REWARD_FN = REWARD_FN  # overridden by --reward_fn CLI flag
+ACTIVE_LEARNING_RATE = LEARNING_RATE  # overridden by --learning_rate CLI flag
+ACTIVE_ENT_COEF = ENT_COEF  # overridden by --ent_coef CLI flag
 
 # ── Scenario presets (route file, duration, time-of-day encoding) ─────────
 SCENARIO_PRESETS = {
@@ -97,8 +100,8 @@ class TimeEncodedObservationFunction(ObservationFunction):
 
     def observation_space(self) -> spaces.Box:
         base_size = self.ts.num_green_phases + 1 + 2 * len(self.ts.lanes)
-        low = np.concatenate([np.zeros(base_size, dtype=np.float32), [-1.0, -1.0]])
-        high = np.concatenate([np.ones(base_size, dtype=np.float32), [1.0, 1.0]])
+        low = np.concatenate([np.zeros(base_size, dtype=np.float32), np.array([-1.0, -1.0], dtype=np.float32)])
+        high = np.concatenate([np.ones(base_size, dtype=np.float32), np.array([1.0, 1.0], dtype=np.float32)])
         return spaces.Box(low=low, high=high)
 
 RESULTS_DIR = "results"
@@ -126,6 +129,21 @@ class TimeLimitCallback(BaseCallback):
         if self.max_seconds and (time.time() - self.start_time) >= self.max_seconds:
             print(f"\n  Time limit reached ({self.max_seconds/3600:.1f}h). Stopping.")
             return False
+        return True
+
+
+class EntropyAnnealingCallback(BaseCallback):
+    """Linearly anneal entropy coefficient from start to end over training."""
+    def __init__(self, ent_start, ent_end, total_timesteps, verbose=0):
+        super().__init__(verbose)
+        self.ent_start = ent_start
+        self.ent_end = ent_end
+        self.total_timesteps = total_timesteps
+
+    def _on_step(self):
+        progress = min(self.num_timesteps / self.total_timesteps, 1.0)
+        new_ent = self.ent_start + (self.ent_end - self.ent_start) * progress
+        self.model.ent_coef = new_ent
         return True
 
 
@@ -339,7 +357,7 @@ def make_env_factory(net_file, route_file, num_seconds):
             route_file=route_file,
             use_gui=False,
             num_seconds=num_seconds,
-            reward_fn=REWARD_FN,
+            reward_fn=ACTIVE_REWARD_FN,
             delta_time=DELTA_TIME,
             yellow_time=YELLOW_TIME,
             min_green=MIN_GREEN,
@@ -485,7 +503,8 @@ def run_evaluation(net_file, route_file, num_seconds, model):
 # ── Training ──
 
 def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
-              max_seconds=None, run_curriculum=False, log_curriculum=False, num_cpus=1, resume_model_path=None):
+              max_seconds=None, run_curriculum=False, log_curriculum=False, num_cpus=1, resume_model_path=None,
+              entropy_annealing=False):
     """
     Train PPO with parameter sharing via SuperSuit.
     All traffic signals share one policy (standard IPPO approach).
@@ -518,13 +537,13 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
             resume_model_path,
             env=env,
             custom_objects={
-                "learning_rate": LEARNING_RATE,
+                "learning_rate": ACTIVE_LEARNING_RATE,
                 "n_steps": N_STEPS,
                 "batch_size": BATCH_SIZE,
                 "n_epochs": N_EPOCHS,
                 "gamma": GAMMA,
                 "gae_lambda": GAE_LAMBDA,
-                "ent_coef": ENT_COEF,
+                "ent_coef": ACTIVE_ENT_COEF,
                 "clip_range": CLIP_RANGE
             }
         )
@@ -533,13 +552,13 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
         model = PPO(
             "MlpPolicy",
             env,
-            learning_rate=LEARNING_RATE,
+            learning_rate=ACTIVE_LEARNING_RATE,
             n_steps=N_STEPS,
             batch_size=BATCH_SIZE,
             n_epochs=N_EPOCHS,
             gamma=GAMMA,
             gae_lambda=GAE_LAMBDA,
-            ent_coef=ENT_COEF,
+            ent_coef=ACTIVE_ENT_COEF,
             clip_range=CLIP_RANGE,
             verbose=0,
             tensorboard_log=os.path.join(run_dir, "tb_logs"),
@@ -550,8 +569,8 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     callbacks = [TrainingLogCallback(log_path, print_freq=5000,
                                      steps_per_episode=STEPS_PER_EPISODE)]
                                      
-    # Checkpoint every ~10 episodes worth of timesteps to prevent data loss
-    checkpoint_freq = max(10000, (36000 * num_cpus) // NUM_AGENTS) 
+    # Checkpoint every ~20 episodes worth of timesteps
+    checkpoint_freq = 20 * STEPS_PER_EPISODE
     checkpoint_callback = CheckpointCallback(
         save_freq=checkpoint_freq,
         save_path=os.path.join(run_dir, "checkpoints"),
@@ -560,6 +579,10 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     callbacks.append(checkpoint_callback)
     if max_seconds:
         callbacks.append(TimeLimitCallback(max_seconds))
+    if entropy_annealing:
+        ent_end = 0.01
+        callbacks.append(EntropyAnnealingCallback(ACTIVE_ENT_COEF, ent_end, total_timesteps))
+        print(f"  Entropy annealing: {ACTIVE_ENT_COEF} -> {ent_end} over {total_timesteps} steps")
 
     stop_desc = f"{total_timesteps} steps"
     if max_seconds:
@@ -744,6 +767,15 @@ def main():
                         help="Number of independent parallel SUMO CPU processes (useful for HPCs like Vega).")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a checkpoint .zip file to resume training from.")
+    parser.add_argument("--reward_fn", type=str, default=None,
+                        choices=["queue", "pressure", "diff-waiting-time", "average-speed"],
+                        help="Reward function (overrides config.py REWARD_FN).")
+    parser.add_argument("--learning_rate", type=float, default=None,
+                        help="Override learning rate (default from config.py: 1e-3).")
+    parser.add_argument("--ent_coef", type=float, default=None,
+                        help="Override entropy coefficient (default from config.py: 0.05).")
+    parser.add_argument("--entropy_annealing", action="store_true",
+                        help="Linearly anneal entropy from ent_coef to 0.01 over training.")
     parser.add_argument("--scenario", type=str, default="uniform",
                         choices=list(SCENARIO_PRESETS.keys()),
                         help="Demand scenario. Sets route_file, num_seconds, and "
@@ -763,6 +795,17 @@ def main():
     if not args.curriculum:
         global CURRENT_HOUR
         CURRENT_HOUR = preset["start_hour"]
+
+    # Override hyperparameters if specified via CLI
+    if args.reward_fn is not None:
+        global ACTIVE_REWARD_FN
+        ACTIVE_REWARD_FN = args.reward_fn
+    if args.learning_rate is not None:
+        global ACTIVE_LEARNING_RATE
+        ACTIVE_LEARNING_RATE = args.learning_rate
+    if args.ent_coef is not None:
+        global ACTIVE_ENT_COEF
+        ACTIVE_ENT_COEF = args.ent_coef
 
     if args.compare_only:
         compare_experiments()
@@ -799,11 +842,13 @@ def main():
         "num_seconds": args.num_seconds,
         "ts_ids": TS_IDS,
         "ts_names": TS_NAMES,
+        "reward_fn": ACTIVE_REWARD_FN,
         "approach": "PPO with parameter sharing (SuperSuit vec env)",
+        "entropy_annealing": args.entropy_annealing,
         "hyperparams": {
-            "lr": LEARNING_RATE, "n_steps": N_STEPS, "batch_size": BATCH_SIZE,
+            "lr": ACTIVE_LEARNING_RATE, "n_steps": N_STEPS, "batch_size": BATCH_SIZE,
             "n_epochs": N_EPOCHS, "gamma": GAMMA, "gae_lambda": GAE_LAMBDA,
-            "ent_coef": ENT_COEF, "clip_range": CLIP_RANGE,
+            "ent_coef": ACTIVE_ENT_COEF, "clip_range": CLIP_RANGE,
             "delta_time": DELTA_TIME, "yellow_time": YELLOW_TIME,
             "min_green": MIN_GREEN, "max_green": MAX_GREEN,
         },
@@ -842,7 +887,8 @@ def main():
     print("\n[2/3] Training PPO agents...")
     model, train_time = train_ppo(
         args.net_file, args.route_file, args.num_seconds,
-        args.total_timesteps, run_dir, max_seconds, args.curriculum, args.log_curriculum, args.num_cpus, args.resume
+        args.total_timesteps, run_dir, max_seconds, args.curriculum, args.log_curriculum, args.num_cpus, args.resume,
+        entropy_annealing=args.entropy_annealing
     )
     meta["train_time_s"] = train_time
     meta["actual_timesteps"] = model.num_timesteps
