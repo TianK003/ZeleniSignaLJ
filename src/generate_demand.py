@@ -131,6 +131,7 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
             "-p", str(max(period, 0.5)),
             "--fringe-factor", str(fringe_factor),
             "--seed", str(42 + i),
+            "--prefix", f"b{i}_",
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)

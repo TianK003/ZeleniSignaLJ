@@ -219,7 +219,16 @@ class FlattenMultiAgentVecEnv(VecEnvWrapper):
         super().__init__(venv)
         self.num_agents = num_agents
         self.num_envs = venv.num_envs * num_agents
-        
+        # DummyVecEnv.observation_space is now (num_agents, obs_dim) after the
+        # GymnasiumSubEnv fix. PPO needs to see (obs_dim,) per agent, so override.
+        batched = venv.observation_space
+        obs_dim = batched.shape[-1]
+        self.observation_space = gym.spaces.Box(
+            low=batched.low.reshape(-1, obs_dim)[0],
+            high=batched.high.reshape(-1, obs_dim)[0],
+            dtype=np.float32,
+        )
+
     def reset(self):
         res = self.venv.reset()
         if isinstance(res, tuple):
@@ -234,24 +243,22 @@ class FlattenMultiAgentVecEnv(VecEnvWrapper):
         self.venv.step_async(acts)
         
     def step_wait(self):
-        obs, rew, done, info = self.venv.step_wait()
+        obs, _rew_scalar, done, info = self.venv.step_wait()
         obs = obs.reshape((self.num_envs, -1))
-        rew = rew.reshape((self.num_envs,))
-        
+
         flat_done = np.zeros(self.num_envs, dtype=bool)
+        flat_rew = np.zeros(self.num_envs, dtype=np.float32)
         flat_info = []
         idx = 0
         for worker_info in info:
-            # Extract the real agents info list hidden from SubprocVecEnv
             agents_info = worker_info.get("agents_info", [])
             for item in agents_info:
-                # Reconstruct real done vectors
-                is_done = bool(item.get('__real_tm', 0) or item.get('__real_tc', 0))
-                flat_done[idx] = is_done
+                flat_done[idx] = bool(item.get('__real_tm', 0) or item.get('__real_tc', 0))
+                flat_rew[idx] = float(item.get('__real_rew', 0.0))
                 flat_info.append(item)
                 idx += 1
-                
-        return obs, rew, flat_done, flat_info
+
+        return obs, flat_rew, flat_done, flat_info
 
 
 
@@ -262,23 +269,32 @@ class GymnasiumSubEnv(gym.Env):
     """
     def __init__(self, venv):
         self.venv = venv
-        self.observation_space = venv.observation_space
+        # venv is a MarkovVectorEnv (num_agents sub-envs). Its observation_space
+        # reports a single-agent shape (obs_dim,), but reset()/step() return
+        # (num_agents, obs_dim). Advertise the true batched shape so DummyVecEnv
+        # allocates a buffer large enough to hold the full batch.
+        single_obs = venv.observation_space
+        n = getattr(venv, 'num_envs', 1)
+        self.observation_space = gym.spaces.Box(
+            low=np.tile(single_obs.low, (n, 1)),
+            high=np.tile(single_obs.high, (n, 1)),
+            dtype=np.float32,
+        )
         self.action_space = venv.action_space
         self.render_mode = None
-        self.num_envs = getattr(venv, 'num_envs', 1)
+        self.num_envs = n
 
     def step(self, action):
         obs, rews, tms, tcs, infs = self.venv.step(action)
-        # Pack the real booleans inside the infs dictionaries
-        # This brilliantly blinds SubprocVecEnv from trying to evaluate array truth values
+        # Pack the real booleans and per-agent rewards inside the infs dictionaries
+        # This blinds SubprocVecEnv from trying to evaluate array truth values
         for i in range(self.num_envs):
             infs[i]['__real_tm'] = float(tms[i])
             infs[i]['__real_tc'] = float(tcs[i])
-            
-        # We explicitly return False, False tricking SubprocVecEnv into acting purely as a passthrough pipe!
-        # MarkovVectorEnv internally handles auto-resetting properly anyway.
-        # We wrap 'infs' in a dictionary because SubprocVecEnv forces mutation on the info dict. 
-        return obs, rews, False, False, {"agents_info": infs}
+            infs[i]['__real_rew'] = float(rews[i])  # per-agent reward extracted in step_wait
+        # Return scalar reward so DummyVecEnv's buf_rews (scalar slot) accepts it.
+        # We wrap 'infs' in a dictionary because SubprocVecEnv forces mutation on the info dict.
+        return obs, float(rews.sum()), False, False, {"agents_info": infs}
 
     def reset(self, seed=None, options=None):
         return self.venv.reset(seed=seed, options=options)
@@ -699,7 +715,17 @@ def main():
                         help="Number of independent parallel SUMO CPU processes (useful for HPCs like Vega).")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to a checkpoint .zip file to resume training from.")
+    parser.add_argument("--scenario", type=str, default="uniform",
+                        choices=["morning_rush", "evening_rush", "uniform"],
+                        help="Demand scenario label. Stored in meta.json; also sets "
+                             "num_seconds if not explicitly provided.")
     args = parser.parse_args()
+
+    # If scenario is a rush-hour preset and num_seconds was not explicitly overridden,
+    # set the appropriate episode duration.
+    _SCENARIO_SECONDS = {"morning_rush": 14400, "evening_rush": 14400, "uniform": 3600}
+    if args.num_seconds == 3600 and args.scenario in ("morning_rush", "evening_rush"):
+        args.num_seconds = _SCENARIO_SECONDS[args.scenario] + WARMUP_SECONDS
 
     if args.compare_only:
         compare_experiments()
@@ -727,6 +753,7 @@ def main():
     meta = {
         "run_id": run_id,
         "tag": args.tag,
+        "scenario": args.scenario,
         "date": datetime.now().isoformat(),
         "net_file": args.net_file,
         "route_file": args.route_file,

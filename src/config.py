@@ -47,6 +47,15 @@ CURRICULUM_BASE_NOISE = 0.05
 CURRICULUM_SIGMA_1 = 1.5
 CURRICULUM_SIGMA_2 = 2.0
 
+# Rush-hour scenario windows (real-world hours of day)
+MORNING_RUSH_START = 6.0    # 06:00
+MORNING_RUSH_END = 10.0     # 10:00 (4h centered on 8:00 peak)
+EVENING_RUSH_START = 14.0   # 14:00
+EVENING_RUSH_END = 18.0     # 18:00 (4h centered on 16:00 peak)
+MORNING_RUSH_SECONDS = int((MORNING_RUSH_END - MORNING_RUSH_START) * 3600)  # 14400
+EVENING_RUSH_SECONDS = int((EVENING_RUSH_END - EVENING_RUSH_START) * 3600)  # 14400
+OFFPEAK_SECONDS = 3600
+
 # ══════════════════════════════════════════
 # PPO hyperparameters
 # ══════════════════════════════════════════
