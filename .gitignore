@@ -29,10 +29,7 @@ models/*.zip
 models/*.pkl
 logs/PPO_*/
 logs/events.*
-wandb/
 
-# ── Results (keep CSVs in git for reproducibility) ──
-# results/*.csv  <-- DO commit these
 
 # ── HPC containers (too large for git) ──
 *.sif
@@ -59,3 +56,4 @@ wandb-metadata.json
 
 results/*
 data/routes/*
+routes.rou.xml
