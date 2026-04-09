@@ -4,12 +4,12 @@
 #SBATCH --job-name=zs_mega_M1E2
 #SBATCH --output=logs/mega_M1E2_%j.out
 #SBATCH --error=logs/mega_M1E2_%j.err
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=64G
+#SBATCH --mem=96G
 
 source hpc/common.sh
 

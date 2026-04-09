@@ -438,23 +438,34 @@ def _build_result(per_intersection_reward, per_intersection_queue,
 # ── Multiprocessing worker ────────────────────────────────────────────────
 
 def _worker(args):
-    """Worker function for parallel runs."""
+    """Worker function for parallel runs. Catches exceptions so one crash doesn't kill all 50."""
     (seed, net_file, route_file, model_morning_path,
      model_evening_path, baseline) = args
 
     wall_start = time.time()
 
-    if baseline:
-        result = run_24h_baseline(net_file, route_file, sumo_seed=seed)
-    else:
-        result = run_24h_megapolicy(
-            net_file, route_file,
-            model_morning_path, model_evening_path,
-            sumo_seed=seed,
-        )
+    try:
+        if baseline:
+            result = run_24h_baseline(net_file, route_file, sumo_seed=seed)
+        else:
+            result = run_24h_megapolicy(
+                net_file, route_file,
+                model_morning_path, model_evening_path,
+                sumo_seed=seed,
+            )
+    except Exception as e:
+        print(f"  [FAIL] Seed {seed}: {e}", flush=True)
+        result = {"total_reward": float("nan"), "avg_queue": float("nan"),
+                  "avg_wait": float("nan"), "total_teleports": 0,
+                  "vehicles_departed": 0, "vehicles_arrived": 0,
+                  "per_intersection_reward": {}, "per_intersection_avg_queue": {},
+                  "per_intersection_avg_wait": {}, "per_window": {},
+                  "error": str(e)}
 
     result["seed"] = seed
     result["wall_time_s"] = round(time.time() - wall_start, 1)
+    print(f"  [OK] Seed {seed:>2d} done in {result['wall_time_s']:.0f}s  "
+          f"reward={result['total_reward']:.0f}", flush=True)
     return result
 
 
@@ -641,14 +652,23 @@ def main():
         seed = r["seed"]
         json_path = os.path.join(args.output_dir, f"run_seed_{seed:02d}.json")
         with open(json_path, "w") as f:
-            json.dump(r, f, indent=2)
+            json.dump(r, f, indent=2, default=str)
 
-    # Write summary CSV
-    csv_path = _write_summary_csv(results, args.output_dir)
-    print(f"Summary CSV: {csv_path}")
+    # Filter out failed runs for summary
+    ok_results = [r for r in results if "error" not in r]
+    failed = len(results) - len(ok_results)
+    if failed:
+        print(f"\nWARNING: {failed}/{len(results)} runs failed (see run_seed_*.json for errors)")
 
-    # Print statistical summary
-    _print_summary(results, args.tag or ("baseline" if args.baseline else "mega"))
+    if ok_results:
+        # Write summary CSV
+        csv_path = _write_summary_csv(ok_results, args.output_dir)
+        print(f"Summary CSV: {csv_path}  ({len(ok_results)} successful runs)")
+
+        # Print statistical summary
+        _print_summary(ok_results, args.tag or ("baseline" if args.baseline else "mega"))
+    else:
+        print("ERROR: All runs failed. No summary produced.")
 
 
 if __name__ == "__main__":

@@ -54,12 +54,12 @@ SLURM_TEMPLATE = """\
 #SBATCH --job-name=zs_mega_{tag}
 #SBATCH --output=logs/mega_{tag}_%j.out
 #SBATCH --error=logs/mega_{tag}_%j.err
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --mem=64G
+#SBATCH --mem=96G
 
 source hpc/common.sh
 
