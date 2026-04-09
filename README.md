@@ -413,6 +413,87 @@ bash hpc/submit_all.sh entanneal
 squeue -u $USER
 ```
 
+## Izbor najboljših politik in mega-politike
+
+Po izvedbi 24 eksperimentov na HPC (3 nagradne funkcije x 2 hitrosti učenja x 2 scenarija + entropy annealing variante) smo na podlagi nadzorne plošče izbrali **3 najboljše politike za jutranjo konico** in **3 najboljše za vecerno konico** glede na izboljsanje % nad bazno linijo (fiksni casi).
+
+### Najboljse politike — jutranja konica (06:00-10:00)
+
+| Rang | Nagradna funkcija | Hitrost ucenja | Izboljsanje |
+|------|-------------------|----------------|-------------|
+| M1 | diff-waiting-time | 1e-3 | **+18.2%** |
+| M2 | pressure | 1e-3 | **+17.2%** |
+| M3 | queue (privzeta) | 3e-4 | **+17.1%** |
+
+### Najboljse politike — vecerna konica (14:00-18:00)
+
+| Rang | Nagradna funkcija | Hitrost ucenja | Entropy annealing | Izboljsanje |
+|------|-------------------|----------------|-------------------|-------------|
+| E1 | pressure | 1e-3 | da | **+15.1%** |
+| E2 | diff-waiting-time | 1e-3 | da | **+15.0%** |
+| E3 | pressure | 3e-4 | da | **+12.9%** |
+
+### Mega-politike (3 x 3 = 9 kombinacij)
+
+Mega-politika kombinira eno jutranjo in eno vecerno politiko z nacrtovalcem (Schedule Controller):
+- **V konicnih urah** (06:00-10:00, 14:00-18:00): RL agent (PPO model) krmili 5 ciljnih kriziscc
+- **Izven konic** (10:00-14:00, 18:00-06:00): vsa kriziscca teccejo na izvornih SUMO fiksnih ccasih
+
+To daje 9 mega-politik: M1E1, M1E2, M1E3, M2E1, M2E2, M2E3, M3E1, M3E2, M3E3.
+
+## Statisticcno testiranje (24h simulacije)
+
+Za statisticcno veljavno primerjavo mega-politik z bazno linijo izvajamo **50 neodvisnih ponovitev** vsake mega-politike na polnih 24-urnih simulacijah.
+
+### Zasnova testa
+
+- **10 pogojev:** 9 mega-politik + 1 bazna linija (sami fiksni ccasi)
+- **50 ponovitev** na pogoj, vsaka z unikatnim SUMO semenom (1-50)
+- **Iste prometne poti** za vse ponovitve (`routes_full_day.rou.xml`) — izoliramo uccinek strategije krmiljenja od variabilnosti povprasevanja
+- **Polni 24h dvokonniccni profil** z usmerjeno asimetrijo (70% vhodni promet zjutraj, 70% izhodni zvecer)
+
+### Merjene metrike (na ponovitev)
+
+- Skupna kumulativna nagrada (vsa kriziscca, vsi ccasovni koraki)
+- Nagrada, povpreccna ccakalna vrsta in ccakalni ccas **po krizisccu** (5 kriziscc)
+- Razdelitev **po ccasovnem oknu** (nocc, jutranja konica, dnevni obok, veccerna konica, veccerni obok)
+- Skupni teleporti, vozila odsla/prispela
+
+### Statisticcna analiza
+
+Iz 50 ponovitev izracunamo za vsako mega-politiko:
+- **Povpreccje, mediana, standardni odklon**
+- **95% interval zaupanja** (CI = 1.96 * std / sqrt(n))
+- **Welchov t-test** proti bazni liniji (neenake variance)
+- **Mann-Whitney U test** (neparametriccni, brez predpostavke o porazdelitvi)
+- **Cohenov d** (velikost uccinka)
+
+Mega-politika je statisticcno znaccilno boljsa od bazne linije, cce je p < 0.05 pri obeh testih.
+
+### Zagon
+
+```bash
+# 1. Generiraj 24h prometno povprasevanje (enkrat)
+python src/generate_demand.py --scenario full_day
+
+# 2. Generiraj SLURM skripte (10 opravil)
+python hpc/statistical-test/generate_mega_jobs.py
+
+# 3. Oddaj vse na HPC
+bash hpc/statistical-test/submit_all.sh
+
+# 4. Rezultati: results/statistical-test/{M1E1,...,baseline}/summary.csv
+```
+
+### Ocenjen ccas na HPC
+
+| Operacija | Ccas |
+|-----------|------|
+| Ena 24h simulacija | ~10-20 min |
+| 50 ponovitev (50 vzporednih delavcev, 64 CPE) | ~15-30 min |
+| Skupaj na opravilo (z varnostno rezervo) | 4h (zahtevano) |
+| Vseh 10 opravil (vzporedno) | ~1h stenske ure |
+
 ## Vizualizacija in demo (TODO)
 
 Načrt za pripravo končne predstavitve za sodnike hackathona.

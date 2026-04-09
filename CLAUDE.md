@@ -252,6 +252,77 @@ sbatch hpc/submit_train.sh
 
 All overridden hyperparams are saved in `meta.json` so the dashboard shows them correctly.
 
+## Top Policy Selection & Mega-Policies
+
+After the HPC sweep (24 configurations x 200 episodes each on 128 CPUs), the top models were selected by overall improvement % over fixed-time baseline (as reported by the dashboard):
+
+**Top 3 Morning Rush (06:00-10:00):**
+| Rank | Tag | Reward Fn | LR | Improvement |
+|------|-----|-----------|-----|------------|
+| M1 | `morningrush_diffwaitingtime_lr1e3_200ep` | diff-waiting-time | 1e-3 | +18.2% |
+| M2 | `morningrush_pressure_lr1e3_200ep` | pressure | 1e-3 | +17.2% |
+| M3 | `morningrush_default_lr3e4_200ep` | queue | 3e-4 | +17.1% |
+
+**Top 3 Evening Rush (14:00-18:00):**
+| Rank | Tag | Reward Fn | LR | Extras | Improvement |
+|------|-----|-----------|-----|--------|------------|
+| E1 | `eveningrush_pressure_lr1e3_entanneal_200ep` | pressure | 1e-3 | entropy annealing | +15.1% |
+| E2 | `eveningrush_diffwaitingtime_lr1e3_entanneal_200ep` | diff-waiting-time | 1e-3 | entropy annealing | +15.0% |
+| E3 | `eveningrush_pressure_lr3e4_entanneal_200ep` | pressure | 3e-4 | entropy annealing | +12.9% |
+
+**Mega-Policy Concept:** A mega-policy combines one morning model + one evening model with the schedule controller. During rush hours, the corresponding RL model controls the 5 target TLS. Outside rush hours, all TLS run their original SUMO fixed-time programs. This gives 3 x 3 = 9 mega-policy combinations (M1E1 through M3E3).
+
+## Statistical Testing (24h Simulations)
+
+To validate mega-policies with statistical rigor, we run **50 replications** of each mega-policy (+ baseline) on full 24h simulations with different SUMO seeds.
+
+**Design:**
+- 10 conditions: 9 mega-policies + 1 baseline (all fixed-time)
+- 50 runs per condition, each with a unique SUMO seed (1-50)
+- Same route file for all runs (`data/routes/routes_full_day.rou.xml`) — isolates control strategy effect from demand variability
+- Full 24h bimodal demand with directional asymmetry (70/30 morning inbound, 70/30 evening outbound)
+
+**Dynamic RL/Fixed-Time Switching** (`src/run_24h.py`):
+The 24h simulation runs a single continuous SUMO environment for 86400 seconds. At each step, the script checks the simulation hour and switches target TLS between RL control and fixed-time control:
+- Fixed-time: restores original SUMO programLogic via TraCI, patches `set_next_phase` to a passthrough (keeps timing alive but doesn't override SUMO's program)
+- RL: restores sumo-rl's phase program, un-patches methods, re-syncs TLS state
+
+**Time Encoding Compatibility:** With `CURRENT_HOUR = 0.0`, the observation's `time_seconds = sim_step`. At sim_step=21600 (6AM), this matches exactly what the morning model saw during training (CURRENT_HOUR=6.0, sim_step=0). Same for evening model at 14:00.
+
+**Metrics Collected Per Run:**
+- Total cumulative reward (all intersections, all timesteps)
+- Per-intersection reward, avg queue, avg waiting time
+- Per-time-window breakdown (night, morning rush, shoulder day, evening rush, shoulder evening)
+- Total teleports, vehicles departed/arrived
+
+**Statistical Analysis:** From 50 runs: mean, median, std, 95% CI, Welch's t-test vs baseline, Mann-Whitney U, Cohen's d.
+
+**New Files:**
+- `src/run_24h.py` — 24h simulation runner with dynamic switching + multiprocessing
+- `src/generate_demand.py --scenario full_day` — generates 24h routes with directional asymmetry
+- `hpc/statistical-test/generate_mega_jobs.py` — generates 10 SLURM scripts
+- `hpc/statistical-test/submit_all.sh` — submits all jobs
+- `hpc/statistical-test/mega_*.slurm` — 9 mega + 1 baseline SLURM scripts
+
+**Commands:**
+```bash
+# Generate 24h route file (once)
+python src/generate_demand.py --scenario full_day
+
+# Generate SLURM scripts
+python hpc/statistical-test/generate_mega_jobs.py
+
+# Submit all statistical tests to HPC
+bash hpc/statistical-test/submit_all.sh
+
+# Local smoke test
+python src/run_24h.py --baseline --num_runs 1 --num_workers 1 --output_dir /tmp/test_baseline
+
+# Results: results/statistical-test/{M1E1,...,M3E3,baseline}/summary.csv
+```
+
+**Estimated HPC Time:** ~30-60 min per job (50 parallel 24h sims with 64 CPUs), 4h wall time requested.
+
 ## TODO: Visualization & Demo Plan
 
 ### Day 1: HPC Experiments
