@@ -939,11 +939,97 @@ function sortTable(col) {{
     print(f"Dashboard saved to: {output_path}")
 
 
+def find_incomplete_experiments():
+    """Find experiments that have a trained model but no evaluation results."""
+    incomplete = []
+    if not os.path.exists(EXPERIMENTS_DIR):
+        return incomplete
+
+    for run_id in sorted(os.listdir(EXPERIMENTS_DIR)):
+        run_dir = os.path.join(EXPERIMENTS_DIR, run_id)
+        meta_path = os.path.join(run_dir, "meta.json")
+        model_path = os.path.join(run_dir, "ppo_shared_policy.zip")
+        results_path = os.path.join(run_dir, "results.csv")
+
+        if not os.path.exists(meta_path) or not os.path.exists(model_path):
+            continue
+
+        with open(meta_path) as f:
+            meta = json.load(f)
+
+        if os.path.exists(results_path) and meta.get("baseline_total_reward") is not None:
+            continue
+
+        incomplete.append(run_id)
+
+    return incomplete
+
+
+def prompt_supplement(incomplete):
+    """Ask user whether to run supplement_missing_results.py first.
+
+    Returns True if supplement was run (dashboard should reload experiments).
+    """
+    print(f"\nFound {len(incomplete)} experiment(s) with trained models but no evaluation results:")
+    for rid in incomplete[:10]:
+        print(f"  - {rid}")
+    if len(incomplete) > 10:
+        print(f"  ... and {len(incomplete) - 10} more")
+
+    print(f"\nThese won't appear in the dashboard without evaluation.")
+    print(f"Options:")
+    print(f"  [y] Run evaluation now (python src/supplement_missing_results.py --num-workers 4)")
+    print(f"  [n] Skip — generate dashboard with available results only")
+
+    try:
+        choice = input("\nEvaluate missing experiments? [y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+    if choice not in ("y", "yes"):
+        return False
+
+    import subprocess
+    import sys
+
+    # Ask for worker count
+    try:
+        workers_input = input("Number of parallel workers (default 4, max ~your CPU cores): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        workers_input = ""
+
+    num_workers = int(workers_input) if workers_input.isdigit() and int(workers_input) > 0 else 4
+
+    print(f"\nRunning supplement_missing_results.py with {num_workers} workers...\n")
+
+    result = subprocess.run(
+        [sys.executable, "src/supplement_missing_results.py", "--num-workers", str(num_workers)],
+        env={**os.environ, "LIBSUMO_AS_TRACI": os.environ.get("LIBSUMO_AS_TRACI", "1")},
+    )
+
+    if result.returncode != 0:
+        print(f"\nSupplement script exited with code {result.returncode}.")
+        print("Generating dashboard with whatever results are available.\n")
+
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate results dashboard")
     parser.add_argument("--output", type=str, default="results/dashboard.html")
+    parser.add_argument("--no-prompt", action="store_true",
+                        help="Skip the incomplete-experiment check and generate "
+                             "dashboard with available results only.")
     args = parser.parse_args()
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
+
+    if not args.no_prompt:
+        incomplete = find_incomplete_experiments()
+        if incomplete:
+            prompt_supplement(incomplete)
+
     experiments = load_experiments()
     generate_html(experiments, args.output)
 
