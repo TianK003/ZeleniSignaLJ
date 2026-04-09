@@ -30,7 +30,7 @@ from config import (
     TOTAL_DAILY_CARS,
     MORNING_RUSH_START, MORNING_RUSH_END, MORNING_RUSH_SECONDS,
     EVENING_RUSH_START, EVENING_RUSH_END, EVENING_RUSH_SECONDS,
-    OFFPEAK_SECONDS,
+    OFFPEAK_SECONDS, FULL_DAY_SECONDS,
 )
 
 
@@ -190,6 +190,13 @@ SCENARIOS = {
         "output": "routes_offpeak.rou.xml",
         "trips": "trips_offpeak.trips.xml",
     },
+    "full_day": {
+        "start_hour": 0.0,
+        "end_hour": 24.0,
+        "duration": FULL_DAY_SECONDS,        # 86400s
+        "output": "routes_full_day.rou.xml",
+        "trips": "trips_full_day.trips.xml",
+    },
 }
 
 
@@ -340,8 +347,128 @@ def _count_trips(trips_file):
     return count
 
 
+def _generate_full_day_scenario(net_file, output_dir):
+    """Generate a full 24h route file with time-varying directional asymmetry.
+
+    - 06:00-10:00 morning rush: 70% inbound (fringe=15), 30% outbound (fringe=1)
+    - 14:00-18:00 evening rush: 30% inbound (fringe=15), 70% outbound (fringe=1)
+    - All other hours: 50/50 symmetric (fringe=5)
+    """
+    cfg = SCENARIOS["full_day"]
+    os.makedirs(output_dir, exist_ok=True)
+
+    output_routes = os.path.join(output_dir, cfg["output"])
+    output_trips = os.path.join(output_dir, cfg["trips"])
+
+    print(f"\n{'='*60}")
+    print(f"Scenario: full_day (24h with time-varying directional asymmetry)")
+    print(f"  Time window: 00:00 - 24:00 ({cfg['duration']}s = 24h)")
+    print(f"  Demand source: bimodal 24h curve (demand_math.get_vph)")
+    print(f"  Output: {output_routes}")
+
+    # Generate full 24h demand bins
+    full_bins = bimodal_demand_bins(0.0, 24.0)
+
+    # Partition bins into time periods
+    morning_bins = []
+    evening_bins = []
+    offpeak_bins = []
+
+    for b, e, rate in full_bins:
+        real_hour = b / 3600.0
+        if MORNING_RUSH_START <= real_hour < MORNING_RUSH_END:
+            morning_bins.append((b, e, rate))
+        elif EVENING_RUSH_START <= real_hour < EVENING_RUSH_END:
+            evening_bins.append((b, e, rate))
+        else:
+            offpeak_bins.append((b, e, rate))
+
+    tmp_dir = tempfile.gettempdir()
+    all_trip_files = []
+    total_vehicles = 0
+
+    # Morning rush: 70% inbound (fringe=15), 30% outbound (fringe=1)
+    if morning_bins:
+        print(f"\n  [1/5] Morning rush inbound  (70%, fringe=15)...")
+        f_in = os.path.join(tmp_dir, "fd_morning_in.trips.xml")
+        total_vehicles += _generate_trips_only(
+            _volume_split(morning_bins, 0.70), net_file, f_in,
+            fringe_factor=15, seed_offset=0, id_prefix="morn_in_")
+        all_trip_files.append(f_in)
+
+        print(f"  [2/5] Morning rush outbound (30%, fringe=1)...")
+        f_out = os.path.join(tmp_dir, "fd_morning_out.trips.xml")
+        total_vehicles += _generate_trips_only(
+            _volume_split(morning_bins, 0.30), net_file, f_out,
+            fringe_factor=1, seed_offset=1000, id_prefix="morn_out_")
+        all_trip_files.append(f_out)
+
+    # Evening rush: 30% inbound (fringe=15), 70% outbound (fringe=1)
+    if evening_bins:
+        print(f"  [3/5] Evening rush inbound  (30%, fringe=15)...")
+        f_in = os.path.join(tmp_dir, "fd_evening_in.trips.xml")
+        total_vehicles += _generate_trips_only(
+            _volume_split(evening_bins, 0.30), net_file, f_in,
+            fringe_factor=15, seed_offset=2000, id_prefix="eve_in_")
+        all_trip_files.append(f_in)
+
+        print(f"  [4/5] Evening rush outbound (70%, fringe=1)...")
+        f_out = os.path.join(tmp_dir, "fd_evening_out.trips.xml")
+        total_vehicles += _generate_trips_only(
+            _volume_split(evening_bins, 0.70), net_file, f_out,
+            fringe_factor=1, seed_offset=3000, id_prefix="eve_out_")
+        all_trip_files.append(f_out)
+
+    # Off-peak: 50/50 symmetric (fringe=5)
+    if offpeak_bins:
+        print(f"  [5/5] Off-peak symmetric    (50/50, fringe=5)...")
+        f_off = os.path.join(tmp_dir, "fd_offpeak.trips.xml")
+        total_vehicles += _generate_trips_only(
+            offpeak_bins, net_file, f_off,
+            fringe_factor=5, seed_offset=4000, id_prefix="off_")
+        all_trip_files.append(f_off)
+
+    # Merge all trip files sorted by departure time
+    print(f"\n  Merging {len(all_trip_files)} trip files ({total_vehicles} vehicles)...")
+    trips = []
+    for tf in all_trip_files:
+        if not os.path.exists(tf):
+            continue
+        with open(tf) as f:
+            for line in f:
+                line_s = line.strip()
+                if line_s.startswith("<trip "):
+                    trips.append(line_s)
+        os.remove(tf)
+
+    def _depart(trip_line):
+        try:
+            idx = trip_line.index('depart="') + 8
+            end_idx = trip_line.index('"', idx)
+            return float(trip_line[idx:end_idx])
+        except ValueError:
+            return 0.0
+
+    trips.sort(key=_depart)
+    merged_trips = os.path.join(tmp_dir, "fd_merged.trips.xml")
+    with open(merged_trips, "w") as f:
+        f.write("<trips>\n")
+        for t in trips:
+            f.write(f"    {t}\n")
+        f.write("</trips>\n")
+
+    _route_trips(merged_trips, net_file, output_trips, output_routes)
+    os.remove(merged_trips)
+
+    print(f"\n  Done: {total_vehicles} vehicles -> {output_routes}")
+    return output_routes
+
+
 def generate_scenario(scenario_name, net_file, output_dir):
     """Generate route file for one rush scenario using the bimodal curve."""
+    if scenario_name == "full_day":
+        return _generate_full_day_scenario(net_file, output_dir)
+
     cfg = SCENARIOS[scenario_name]
     os.makedirs(output_dir, exist_ok=True)
 
@@ -437,7 +564,7 @@ def main():
     mode.add_argument("--profile", type=str, choices=["uniform"],
                       help="Demand temporal profile (uniform for smoke tests)")
     mode.add_argument("--scenario", type=str,
-                      choices=["morning_rush", "evening_rush", "offpeak", "all"],
+                      choices=["morning_rush", "evening_rush", "offpeak", "full_day", "all"],
                       help="Rush-hour scenario using bimodal 24h curve")
 
     # --profile mode arguments

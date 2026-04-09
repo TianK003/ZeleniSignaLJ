@@ -55,6 +55,7 @@ EVENING_RUSH_END = 18.0     # 18:00 (4h centered on 16:00 peak)
 MORNING_RUSH_SECONDS = int((MORNING_RUSH_END - MORNING_RUSH_START) * 3600)  # 14400
 EVENING_RUSH_SECONDS = int((EVENING_RUSH_END - EVENING_RUSH_START) * 3600)  # 14400
 OFFPEAK_SECONDS = 3600
+FULL_DAY_SECONDS = 86400      # 24 hours (for statistical testing)
 
 # ══════════════════════════════════════════
 # PPO hyperparameters
