@@ -569,8 +569,12 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     callbacks = [TrainingLogCallback(log_path, print_freq=5000,
                                      steps_per_episode=STEPS_PER_EPISODE)]
                                      
-    # Checkpoint every ~20 episodes worth of timesteps
-    checkpoint_freq = 20 * STEPS_PER_EPISODE
+    # Checkpoint every ~10 episodes. CheckpointCallback.save_freq counts
+    # _on_step() calls (one per env.step()), not timesteps. With num_envs
+    # parallel sub-environments, each call advances num_envs timesteps.
+    num_envs = num_cpus * NUM_AGENTS
+    episodes_per_checkpoint = 10
+    checkpoint_freq = max(1, (episodes_per_checkpoint * STEPS_PER_EPISODE) // num_envs)
     checkpoint_callback = CheckpointCallback(
         save_freq=checkpoint_freq,
         save_path=os.path.join(run_dir, "checkpoints"),
