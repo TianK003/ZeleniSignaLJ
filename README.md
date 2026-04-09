@@ -293,7 +293,7 @@ flowchart TD
 
     subgraph HPC ["HPC — Vega superračunalnik"]
         DEF["hpc/traffic_rl.def\nApptainer vsebnik"]
-        SLURM["hpc/submit_train.sh\nSLURM opravilo"]
+        SLURM["hpc/sweep/submit_train.sh\nSLURM opravilo"]
     end
 
     subgraph RESULTS ["Rezultati"]
@@ -366,12 +366,21 @@ zeleni-signalj/
 │   ├── analyze_sim.py        # Analiza SUMO izhoda (teleporti, pretoki)
 │   └── dashboard.py          # Generiranje HTML nadzorne plošče
 ├── hpc/
-│   ├── traffic_rl.def    # Apptainer definicija vsebnika
-│   └── submit_train.sh   # SLURM skripta za Vego
+│   ├── common.sh             # Skupna HPC nastavitev (venv, SUMO_HOME)
+│   ├── traffic_rl.def        # Apptainer definicija vsebnika
+│   ├── sweep/                # Hiperparametrsko iskanje (30 SLURM skript)
+│   │   ├── generate_jobs.py  # Generator SLURM skript
+│   │   ├── submit_all.sh     # Oddaja vseh sweep opravil
+│   │   └── *.slurm           # Posamezne sweep skripte
+│   └── statistical-test/     # 24h statistično testiranje mega-politik
+│       ├── generate_mega_jobs.py  # Generator 10 SLURM skript
+│       ├── submit_all.sh          # Oddaja vseh mega-testov
+│       └── mega_*.slurm           # 9 mega-politik + 1 bazna linija
 ├── models/               # Shranjeni modeli (kontrolne točke)
 ├── logs/                 # Dnevniki učenja
 └── results/
     ├── experiments/      # Rezultati po eksperimentih (meta.json, results.csv, model)
+    ├── statistical-test/ # Rezultati 24h statisticnih testov (50 ponovitev x 10 pogojev)
     ├── rush_hour_comparison.csv  # KPI primerjava po scenarijih koničnih ur
     ├── comparison_summary.csv    # KPI po posameznih križiščih
     └── dashboard.html    # Interaktivna nadzorna plošča
@@ -387,7 +396,7 @@ zeleni-signalj/
 
 ## HPC eksperimenti
 
-30 pripravljenih SLURM skript v `hpc/` za sistematično iskanje najboljše konfiguracije.
+30 pripravljenih SLURM skript v `hpc/sweep/` za sistematično iskanje najboljše konfiguracije.
 
 **Matrika eksperimentov:**
 - 3 nagradne funkcije: `queue`, `pressure`, `diff-waiting-time`
@@ -398,16 +407,16 @@ zeleni-signalj/
 
 ```bash
 # Oddaj vse eksperimente
-bash hpc/submit_all.sh
+bash hpc/sweep/submit_all.sh
 
 # Oddaj samo pressure variante
-bash hpc/submit_all.sh pressure
+bash hpc/sweep/submit_all.sh pressure
 
 # Oddaj samo 100-epizodne eksperimente
-bash hpc/submit_all.sh 100ep
+bash hpc/sweep/submit_all.sh 100ep
 
 # Oddaj samo entropy annealing variante
-bash hpc/submit_all.sh entanneal
+bash hpc/sweep/submit_all.sh entanneal
 
 # Spremljaj status
 squeue -u $USER

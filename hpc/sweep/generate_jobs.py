@@ -87,6 +87,6 @@ for scenario in SCENARIOS:
 
 print(f"Generated {len(scripts)} SLURM scripts (all {EPISODES} episodes):")
 for s in sorted(scripts):
-    print(f"  hpc/{s}")
+    print(f"  hpc/sweep/{s}")
 print(f"\nResume any experiment with:")
 print(f"  python src/experiment.py --resume results/experiments/<run_id>/checkpoints/ppo_model_XXXXX_steps.zip --episode_count 400 ...")

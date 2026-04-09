@@ -11,7 +11,7 @@
 FILTER="${1:-}"
 COUNT=0
 
-for script in hpc/*.slurm; do
+for script in hpc/sweep/*.slurm; do
     if [ -n "$FILTER" ] && [[ ! "$script" == *"$FILTER"* ]]; then
         continue
     fi
