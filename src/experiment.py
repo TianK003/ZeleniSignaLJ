@@ -289,9 +289,12 @@ class FlattenMultiAgentVecEnv(VecEnvWrapper):
     This wrapper effortlessly flattens the output natively to (num_cpus * num_agents, obs_dim) so PPO accepts it.
     """
     def __init__(self, venv, num_agents):
-        super().__init__(venv)
         self.num_agents = num_agents
-        self.num_envs = venv.num_envs * num_agents
+        # Essential: Ensure the AI library knows it is receiving a flattened batch 
+        # of (num_cpus * num_agents) transitions every single step.
+        v_envs = getattr(venv, 'num_envs', 1)
+        self.num_envs = v_envs * num_agents
+        super().__init__(venv)
         # DummyVecEnv.observation_space is now (num_agents, obs_dim) after the
         # GymnasiumSubEnv fix. PPO needs to see (obs_dim,) per agent, so override.
         batched = venv.observation_space
@@ -557,6 +560,8 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
 
     print(f"  Observation space: {env.observation_space}")
     print(f"  Action space: {env.action_space}")
+    print(f"  Target Training: {total_timesteps:,} transitions ({total_timesteps // STEPS_PER_EPISODE} episodes)")
+    print(f"  Parallelization: {env.num_envs} active agents ({num_cpus} CPUs x {NUM_AGENTS} agents)")
 
     # All hyperparameters from src/config.py — single source of truth
     if resume_model_path:
