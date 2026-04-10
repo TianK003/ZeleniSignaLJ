@@ -113,6 +113,11 @@ def _switch_to_fixed_time(env, ts_id, original_programs):
     logic.type = 0
     logic.phases = phases
     sumo.trafficlight.setProgramLogic(ts_id, logic)
+    # Re-activate automatic cycling: setRedYellowGreenState (called by
+    # sumo-rl's _build_phases) puts the TLS in manual mode. setProgramLogic
+    # alone only updates phase definitions. setProgram re-activates the
+    # automatic program so SUMO cycles through phases on its own.
+    sumo.trafficlight.setProgram(ts_id, logic.programID)
 
     # Passthrough patch: keeps timing alive but doesn't override SUMO's program
     def passthrough_set_next_phase(new_phase):
