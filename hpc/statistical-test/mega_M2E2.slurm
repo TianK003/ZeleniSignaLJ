@@ -16,13 +16,13 @@ source hpc/common.sh
 echo "Starting 24h statistical test: M2E2"
 echo "  Morning model: pressure, lr=1e-3 (+17.2%)"
 echo "  Evening model: diff-waiting-time, lr=1e-3, entropy annealing (+15.0%)"
-echo "  Runs: 50 | Workers: 50"
+echo "  Runs: 100 | Workers: 64"
 
 srun python src/run_24h.py \
     --model_morning results/experiments/20260409_000353_morningrush_pressure_lr1e3_200ep/ppo_shared_policy.zip \
     --model_evening results/experiments/20260408_235311_eveningrush_diffwaitingtime_lr1e3_entanneal_200ep/ppo_shared_policy.zip \
     \
-    --num_runs 50 \
-    --num_workers 50 \
+    --num_runs 100 \
+    --num_workers 64 \
     --output_dir results/statistical-test/M2E2 \
     --tag M2E2

@@ -16,12 +16,12 @@ source hpc/common.sh
 echo "Starting 24h statistical test: baseline"
 echo "  Morning model: none (fixed-time)"
 echo "  Evening model: none (fixed-time)"
-echo "  Runs: 50 | Workers: 50"
+echo "  Runs: 100 | Workers: 64"
 
 srun python src/run_24h.py \
     --baseline \
     \
-    --num_runs 50 \
-    --num_workers 50 \
+    --num_runs 100 \
+    --num_workers 64 \
     --output_dir results/statistical-test/baseline \
     --tag baseline
