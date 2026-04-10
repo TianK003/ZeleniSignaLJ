@@ -6,7 +6,7 @@ HPC_DIR = os.path.dirname(os.path.abspath(__file__))
 REWARD_FNS = ["queue", "pressure", "diff-waiting-time"]
 LEARNING_RATES = [1e-3, 3e-4]
 SCENARIOS = ["morning_rush", "evening_rush"]
-EPISODES = 200
+EPISODES = 500
 
 def lr_str(lr):
     if lr == 1e-3: return "lr1e3"
@@ -26,7 +26,7 @@ def write_script(filename, job_name, extra_args, tag):
 #SBATCH --job-name={job_name}
 #SBATCH --output=logs/{job_name}_%j.out
 #SBATCH --error=logs/{job_name}_%j.err
-#SBATCH --time=16:00:00
+#SBATCH --time=36:00:00
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -39,7 +39,7 @@ srun python src/experiment.py \\
     --num_cpus 128 \\
     --episode_count {EPISODES} \\
     {extra_args} \\
-    --tag {tag}
+    --tag two_{tag}_{EPISODES}ep
 """
     with open(path, "w") as f:
         f.write(content)

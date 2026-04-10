@@ -55,6 +55,7 @@ from tls_programs import parse_original_programs, restore_non_target_programs
 from demand_math import get_vph
 from generate_demand import write_demand_xml
 import random
+import uuid
 
 from sumo_rl.environment.observations import ObservationFunction
 import gymnasium as gym
@@ -123,7 +124,20 @@ EXPERIMENTS_DIR = "results/experiments"
 
 
 def get_run_id(tag=""):
+    """
+    Generate a unique run ID using timestamp, tag, and SLURM_JOB_ID/UUID 
+    to prevent folder collisions on HPC clusters.
+    """
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Priority 1: SLURM Job ID (if on HPC)
+    job_id = os.environ.get("SLURM_JOB_ID", "")
+    if job_id:
+        ts = f"{ts}_{job_id}"
+    else:
+        # Priority 2: Random suffix (for local parallel runs)
+        ts = f"{ts}_{uuid.uuid4().hex[:4]}"
+        
     return f"{ts}_{tag}" if tag else ts
 
 
@@ -518,7 +532,7 @@ def run_evaluation(net_file, route_file, num_seconds, model):
 
 def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
               max_seconds=None, run_curriculum=False, log_curriculum=False, num_cpus=1, resume_model_path=None,
-              entropy_annealing=False):
+              entropy_annealing=False, episodes_per_save=25):
     """
     Train PPO with parameter sharing via SuperSuit.
     All traffic signals share one policy (standard IPPO approach).
@@ -578,20 +592,27 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
             tensorboard_log=os.path.join(run_dir, "tb_logs"),
         )
 
-    # Callbacks
+    # Training Log callback
     log_path = os.path.join(run_dir, "training_log.csv")
     callbacks = [TrainingLogCallback(log_path, print_freq=5000,
                                      steps_per_episode=STEPS_PER_EPISODE)]
                                      
-    # Checkpoint every ~10 episodes. CheckpointCallback.save_freq counts
-    # _on_step() calls (one per env.step()), not timesteps. With num_envs
-    # parallel sub-environments, each call advances num_envs timesteps.
+    # Checkpoint every N episodes. CheckpointCallback.save_freq counts
+    # _on_step() calls (one per global 'brain' step), not total timesteps.
+    # Total timesteps between saves = save_freq * num_envs.
     num_envs = num_cpus * NUM_AGENTS
-    episodes_per_checkpoint = 10
-    checkpoint_freq = max(1, (episodes_per_checkpoint * STEPS_PER_EPISODE) // num_envs)
+    checkpoint_freq = max(1, (episodes_per_save * STEPS_PER_EPISODE) // num_envs)
+    
+    checkpoint_dir = os.path.join(run_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    print(f"  [Checkpoints] Saving every {episodes_per_save} episodes.")
+    print(f"                Internal sync frequency: save every {checkpoint_freq} global brain steps.")
+    print(f"                Destination: {checkpoint_dir}/")
+
     checkpoint_callback = CheckpointCallback(
         save_freq=checkpoint_freq,
-        save_path=os.path.join(run_dir, "checkpoints"),
+        save_path=checkpoint_dir,
         name_prefix="ppo_model"
     )
     callbacks.append(checkpoint_callback)
@@ -794,6 +815,8 @@ def main():
                         help="Override entropy coefficient (default from config.py: 0.05).")
     parser.add_argument("--entropy_annealing", action="store_true",
                         help="Linearly anneal entropy from ent_coef to 0.01 over training.")
+    parser.add_argument("--episodes_per_save", type=int, default=25,
+                        help="Save a model checkpoint every N episodes (default: 25).")
     parser.add_argument("--scenario", type=str, default="uniform",
                         choices=list(SCENARIO_PRESETS.keys()),
                         help="Demand scenario. Sets route_file, num_seconds, and "
@@ -906,7 +929,7 @@ def main():
     model, train_time = train_ppo(
         args.net_file, args.route_file, args.num_seconds,
         args.total_timesteps, run_dir, max_seconds, args.curriculum, args.log_curriculum, args.num_cpus, args.resume,
-        entropy_annealing=args.entropy_annealing
+        entropy_annealing=args.entropy_annealing, episodes_per_save=args.episodes_per_save
     )
     meta["train_time_s"] = train_time
     meta["actual_timesteps"] = model.num_timesteps
