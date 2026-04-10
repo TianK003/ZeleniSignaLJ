@@ -77,11 +77,20 @@ def load_experiments():
             except Exception:
                 pass
 
+        # Scan for interpretability explanations (images)
+        explanations = []
+        expl_dir = os.path.join(run_dir, "explanations")
+        if os.path.exists(expl_dir):
+            for f in sorted(os.listdir(expl_dir)):
+                if f.endswith(".png") or f.endswith(".jpg"):
+                    explanations.append(f)
+
         experiments.append({
             "meta": meta,
             "results": results,
             "training_log": training_log,
             "step_log": step_log,
+            "explanations": explanations,
         })
 
     return experiments
@@ -491,6 +500,7 @@ function render() {{
     <div class="tab" onclick="switchTab(2)">Ucenje</div>
     <div class="tab" onclick="switchTab(3)">Hiperparametri</div>
     <div class="tab" onclick="switchTab(4)">Podrobnosti</div>
+    <div class="tab" id="explTab" onclick="switchTab(6)">Interpretibilnost</div>
     ${{megaData ? '<div class="tab" onclick="switchTab(5)">Mega-politike</div>' : ''}}
   </div>`;
 
@@ -768,6 +778,7 @@ function render() {{
   buildCurveSelector();
   updateHyperparams();
   updateDetails();
+  updateExplanations();
   if (megaData) {{
     updateMegaOverall();
     updateMegaIntersections();
@@ -1269,6 +1280,66 @@ function updateDetails() {{
   }}
 
   document.getElementById('detailPanel').innerHTML = h;
+}}
+
+function updateExplanations() {{
+  const idx = parseInt(document.getElementById('explExpSelect')?.value || 0);
+  const exp = experiments[idx];
+  if (!exp) return;
+
+  let h = '';
+  const runId = exp.meta.run_id;
+  
+  if (!exp.explanations || exp.explanations.length === 0) {{
+    h = '<div class="no-data"><p>Ni podatkov o interpretibilnosti.</p><p style="font-size:13px;margin-top:8px">Zazenite: <code>python src/collect_states.py --model_path results/experiments/' + runId + '/ppo_shared_policy.zip</code></p></div>';
+  }} else {{
+    h += '<div class="grid-2">';
+    
+    // Group images by type
+    const shaps = exp.explanations.filter(f => f.startsWith('shap_'));
+    const trees = exp.explanations.filter(f => f.startsWith('tree_'));
+    const umaps = exp.explanations.filter(f => f.startsWith('umap_'));
+    
+    if (umaps.length > 0) {{
+        h += '<div class="card"><div class="card-title">Latentni prostor (t-SNE / UMAP)</div>';
+        umaps.forEach(f => {{
+            const label = f.includes('actions') ? 'Po akcijah' : 'Po casu dneva';
+            h += `<div style="margin-bottom:15px; text-align:center;">
+                    <img src="experiments/${{runId}}/explanations/${{f}}" style="max-width:100%; border-radius:4px; border:1px solid #334155;">
+                    <div class="info-text">${{label}}</div>
+                  </div>`;
+        }});
+        h += '</div>';
+    }}
+    
+    if (shaps.length > 0) {{
+        h += '<div class="card"><div class="card-title">Pomembnost parametrov (SHAP)</div>';
+        shaps.forEach(f => {{
+            const name = f.replace('shap_', '').replace('.png', '');
+            h += `<div style="margin-bottom:15px; text-align:center;">
+                    <img src="experiments/${{runId}}/explanations/${{f}}" style="max-width:100%; border-radius:4px; border:1px solid #334155;">
+                    <div class="info-text">Krizisce: ${{name}}</div>
+                  </div>`;
+        }});
+        h += '</div>';
+    }}
+
+    if (trees.length > 0) {{
+        h += '<div class="card" style="grid-column: span 2;"><div class="card-title">Logicna pravila (Decision Tree)</div>';
+        trees.forEach(f => {{
+            const name = f.replace('tree_', '').replace('.png', '');
+            h += `<div style="margin-bottom:15px; text-align:center;">
+                    <img src="experiments/${{runId}}/explanations/${{f}}" style="max-width:100%; border-radius:4px; border:1px solid #334155;">
+                    <div class="info-text">Odlocitveni algoritem: ${{name}}</div>
+                  </div>`;
+        }});
+        h += '</div>';
+    }}
+    
+    h += '</div>';
+  }}
+
+  document.getElementById('explPanel').innerHTML = h;
 }}
 
 // ── Table sorting ──
