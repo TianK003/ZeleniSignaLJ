@@ -355,16 +355,17 @@ zeleni-signalj/
 ├── src/
 │   ├── experiment.py         # Celoten eksperiment (bazna linija → učenje → evalvacija)
 │   ├── evaluate.py           # Multi-scenarij evalvacija (morning/evening/offpeak)
+│   ├── run_24h.py            # 24h simulacija z dinamicnim RL/fiksni cas preklapljanjem
 │   ├── config.py             # ID-ji križišč, parametri simulacije, PPO hiperparametri
 │   ├── agent_filter.py       # PettingZoo ovoj za filtriranje na 5 križišč
 │   ├── tls_programs.py       # Obnovitev izvornih SUMO programov za neopazovana križišča
 │   ├── custom_reward.py      # Prilagojene nagradne funkcije
 │   ├── demand_math.py        # Dvokonična 24h prometna krivulja (get_vph)
-│   ├── generate_demand.py    # Generiranje povpraševanja (uniform + scenariji koničnih ur)
+│   ├── generate_demand.py    # Generiranje povpraševanja (uniform + scenariji + full_day)
 │   ├── schedule_controller.py  # Načrtovalec: RL v konicah, fiksni čas drugače
 │   ├── eval_helper.py        # Pomočnik za evalvacijo v podprocesih (curriculum)
 │   ├── analyze_sim.py        # Analiza SUMO izhoda (teleporti, pretoki)
-│   └── dashboard.py          # Generiranje HTML nadzorne plošče
+│   └── dashboard.py          # HTML nadzorna plosca (6 zavihkov vkljucno z mega-politikami)
 ├── hpc/
 │   ├── common.sh             # Skupna HPC nastavitev (venv, SUMO_HOME)
 │   ├── traffic_rl.def        # Apptainer definicija vsebnika
@@ -372,18 +373,21 @@ zeleni-signalj/
 │   │   ├── generate_jobs.py  # Generator SLURM skript
 │   │   ├── submit_all.sh     # Oddaja vseh sweep opravil
 │   │   └── *.slurm           # Posamezne sweep skripte
-│   └── statistical-test/     # 24h statistično testiranje mega-politik
-│       ├── generate_mega_jobs.py  # Generator 10 SLURM skript
+│   └── statistical-test/     # 24h statisticno testiranje mega-politik
+│       ├── generate_mega_jobs.py  # Generator 10 SLURM skript (100 ponovitev)
 │       ├── submit_all.sh          # Oddaja vseh mega-testov
 │       └── mega_*.slurm           # 9 mega-politik + 1 bazna linija
 ├── models/               # Shranjeni modeli (kontrolne točke)
 ├── logs/                 # Dnevniki učenja
 └── results/
     ├── experiments/      # Rezultati po eksperimentih (meta.json, results.csv, model)
-    ├── statistical-test/ # Rezultati 24h statisticnih testov (50 ponovitev x 10 pogojev)
-    ├── rush_hour_comparison.csv  # KPI primerjava po scenarijih koničnih ur
-    ├── comparison_summary.csv    # KPI po posameznih križiščih
-    └── dashboard.html    # Interaktivna nadzorna plošča
+    ├── statistical-test/ # Rezultati 24h statisticnih testov (100 ponovitev x 10 pogojev)
+    │   ├── M1E1/         # meta.json + 100x run_seed_*.json + summary.csv
+    │   ├── ...           # M1E2, M1E3, M2E1, ..., M3E3
+    │   └── baseline/     # Bazna linija (sami fiksni casi)
+    ├── rush_hour_comparison.csv  # KPI primerjava po scenarijih konicnih ur
+    ├── comparison_summary.csv    # KPI po posameznih kriziscih
+    └── dashboard.html    # Interaktivna nadzorna plosca (6 zavihkov)
 ```
 
 ## Tehnologije
@@ -396,7 +400,9 @@ zeleni-signalj/
 
 ## HPC eksperimenti
 
-30 pripravljenih SLURM skript v `hpc/sweep/` za sistematično iskanje najboljše konfiguracije.
+### Hiperparametrsko iskanje (sweep)
+
+30 pripravljenih SLURM skript v `hpc/sweep/` za sistematicno iskanje najboljse konfiguracije.
 
 **Matrika eksperimentov:**
 - 3 nagradne funkcije: `queue`, `pressure`, `diff-waiting-time`
@@ -450,34 +456,48 @@ Mega-politika kombinira eno jutranjo in eno vecerno politiko z nacrtovalcem (Sch
 
 To daje 9 mega-politik: M1E1, M1E2, M1E3, M2E1, M2E2, M2E3, M3E1, M3E2, M3E3.
 
-## Statisticcno testiranje (24h simulacije)
+## Statisticno testiranje (24h simulacije)
 
-Za statisticcno veljavno primerjavo mega-politik z bazno linijo izvajamo **50 neodvisnih ponovitev** vsake mega-politike na polnih 24-urnih simulacijah.
+Za statisticno veljavno primerjavo mega-politik z bazno linijo izvajamo **100 neodvisnih ponovitev** vsake mega-politike na polnih 24-urnih simulacijah.
 
 ### Zasnova testa
 
-- **10 pogojev:** 9 mega-politik + 1 bazna linija (sami fiksni ccasi)
-- **50 ponovitev** na pogoj, vsaka z unikatnim SUMO semenom (1-50)
-- **Iste prometne poti** za vse ponovitve (`routes_full_day.rou.xml`) — izoliramo uccinek strategije krmiljenja od variabilnosti povprasevanja
-- **Polni 24h dvokonniccni profil** z usmerjeno asimetrijo (70% vhodni promet zjutraj, 70% izhodni zvecer)
+- **10 pogojev:** 9 mega-politik + 1 bazna linija (sami fiksni casi)
+- **100 ponovitev** na pogoj, vsaka z unikatnim SUMO semenom (1-100)
+- **Iste prometne poti** za vse ponovitve (`routes_full_day.rou.xml`) — izoliramo ucinek strategije krmiljenja od variabilnosti povprasevanja
+- **Polni 24h dvokonicni profil** z usmerjeno asimetrijo (70% vhodni promet zjutraj, 70% izhodni zvecer)
+
+### Dinamicno preklapljanje RL/fiksni cas (`run_24h.py`)
+
+24h simulacija tece kot en neprekinjen SUMO okolje (86400 sekund). Na vsakem koraku skripta preveri uro simulacije in preklopi ciljne semaforje med RL in fiksnim casom:
+
+| Cas | Nacin | Opis |
+|-----|-------|------|
+| 00:00-06:00 | Fiksni cas | Obnovljen izvorni SUMO program |
+| 06:00-10:00 | RL (jutranji model) | PPO agent krmili 5 krizisc |
+| 10:00-14:00 | Fiksni cas | Obnovljen izvorni SUMO program |
+| 14:00-18:00 | RL (vecerni model) | PPO agent krmili 5 krizisc |
+| 18:00-24:00 | Fiksni cas | Obnovljen izvorni SUMO program |
+
+**Pomembno:** Ob preklopu na fiksni cas se poklice `setProgramLogic()` za obnovitev faz **in** `setProgram()` za ponoven zagon avtomaticnega cikliranja. Brez `setProgram()` bi semaforji obticsali na eni fazi (ena smer stalno zelena), ker `setRedYellowGreenState()` iz sumo-rl postavi semafor v rocni nacin.
 
 ### Merjene metrike (na ponovitev)
 
-- Skupna kumulativna nagrada (vsa kriziscca, vsi ccasovni koraki)
-- Nagrada, povpreccna ccakalna vrsta in ccakalni ccas **po krizisccu** (5 kriziscc)
-- Razdelitev **po ccasovnem oknu** (nocc, jutranja konica, dnevni obok, veccerna konica, veccerni obok)
+- Skupna kumulativna nagrada (vsa krizisca, vsi casovni koraki)
+- Nagrada, povprecna cakalna vrsta in cakalni cas **po kriziscu** (5 krizisc)
+- Razdelitev **po casovnem oknu** (noc, jutranja konica, dnevni obok, vecerna konica, vecerni obok)
 - Skupni teleporti, vozila odsla/prispela
 
-### Statisticcna analiza
+### Statisticna analiza
 
-Iz 50 ponovitev izracunamo za vsako mega-politiko:
-- **Povpreccje, mediana, standardni odklon**
-- **95% interval zaupanja** (CI = 1.96 * std / sqrt(n))
+Iz 100 ponovitev izracunamo za vsako mega-politiko:
+- **Povprecje, mediana, standardni odklon**
+- **95% interval zaupanja** (t-porazdelitev)
 - **Welchov t-test** proti bazni liniji (neenake variance)
-- **Mann-Whitney U test** (neparametriccni, brez predpostavke o porazdelitvi)
-- **Cohenov d** (velikost uccinka)
+- **Mann-Whitney U test** (neparametricni, brez predpostavke o porazdelitvi)
+- **Cohenov d** (velikost ucinka)
 
-Mega-politika je statisticcno znaccilno boljsa od bazne linije, cce je p < 0.05 pri obeh testih.
+Mega-politika je statisticno znacilno boljsa od bazne linije, ce je p < 0.05 pri obeh testih.
 
 ### Zagon
 
@@ -485,33 +505,69 @@ Mega-politika je statisticcno znaccilno boljsa od bazne linije, cce je p < 0.05 
 # 1. Generiraj 24h prometno povprasevanje (enkrat)
 python src/generate_demand.py --scenario full_day
 
-# 2. Generiraj SLURM skripte (10 opravil)
+# 2. Generiraj SLURM skripte (10 opravil, 100 ponovitev)
 python hpc/statistical-test/generate_mega_jobs.py
 
 # 3. Oddaj vse na HPC
 bash hpc/statistical-test/submit_all.sh
 
 # 4. Rezultati: results/statistical-test/{M1E1,...,baseline}/summary.csv
+
+# 5. Generiraj nadzorno plosco z zavihkom Mega-politike
+python src/dashboard.py --no-prompt
 ```
 
-### Ocenjen ccas na HPC
+### Ocenjen cas na HPC
 
-| Operacija | Ccas |
-|-----------|------|
+| Operacija | Cas |
+|-----------|-----|
 | Ena 24h simulacija | ~10-20 min |
-| 50 ponovitev (50 vzporednih delavcev, 64 CPE) | ~15-30 min |
-| Skupaj na opravilo (z varnostno rezervo) | 4h (zahtevano) |
+| 100 ponovitev (64 vzporednih delavcev, 64 CPE) | ~30-50 min |
+| Skupaj na opravilo (z varnostno rezervo) | 8h (zahtevano) |
 | Vseh 10 opravil (vzporedno) | ~1h stenske ure |
 
-## Vizualizacija in demo (TODO)
+## Nadzorna plosca (Dashboard)
 
-Načrt za pripravo končne predstavitve za sodnike hackathona.
+Interaktivna HTML nadzorna plosca (`results/dashboard.html`) s 6 zavihki:
 
-### Rezultati in nadzorna plošča
-- [ ] Zaženi 5-10+ eksperimentov na HPC z različnimi nagradnimi funkcijami
-- [ ] Prenesi rezultate iz Vege (`results/experiments/`)
-- [ ] Generiraj nadzorno ploščo: `python src/dashboard.py`
-- [ ] Preveri zavihke: primerjava, križišča, učne krivulje, hiperparametri
+```bash
+python src/dashboard.py --no-prompt
+# Odpri results/dashboard.html v brskalniku
+```
+
+| Zavihek | Vsebina |
+|---------|---------|
+| **Primerjava** | Primerjava vseh eksperimentov: bazna linija vs RL, izboljsanje %, filtriranje |
+| **Krizisca** | Razdelitev po 5 kriziscih: nagrada, izboljsanje %, trendi |
+| **Ucenje** | Krivulje ucenja (epizode in koraki) za izbrane eksperimente |
+| **Hiperparametri** | Razsevni diagrami (koraki vs. izboljsanje, LR vs. izboljsanje), tabela |
+| **Podrobnosti** | Metapodatki in hiperparametri posameznega eksperimenta |
+| **Mega-politike** | Statisticna primerjava 9 mega-politik z bazno linijo (100 ponovitev) |
+
+### Zavihek Mega-politike
+
+Zavihek se prikaze samodejno, ko obstajajo rezultati v `results/statistical-test/`. Vsebuje:
+
+- **KPI kartice** — stevilo pogojev, najboljsa/najslabsa mega-politika, stevilo ponovitev, znacilnost
+- **Primerjava skupne nagrade** — stolpcni diagram z 95% intervali zaupanja
+- **3x3 toplotna karta** — jutranji model (M1-M3) x vecerni model (E1-E3), barvno kodirano, z zvezdicami znacilnosti (`*/**/***`)
+- **Primerjava po kriziscih** — skupinski stolpci za nagrado in izboljsanje po 5 kriziscih
+- **Primerjava po casovnih oknih** — skupinski stolpci za 6 casovnih oken
+- **Tabela statisticne znacilnosti** — Welchov t-test, Mann-Whitney U, Cohenov d, p-vrednosti
+- **Podrobnosti mega-politike** — per-krizisce in per-okno statistika za izbrano politiko
+
+Statisticni testi se izracunajo v Pythonu (numpy, scipy) in vlozijo kot JSON v HTML.
+
+## Vizualizacija in demo
+
+Nacrt za pripravo koncne predstavitve za sodnike hackathona.
+
+### Rezultati in nadzorna plosca
+- [x] Zazeni eksperimente na HPC z razlicnimi nagradnimi funkcijami
+- [x] Prenesi rezultate iz Vege (`results/experiments/`)
+- [x] Generiraj nadzorno plosco: `python src/dashboard.py`
+- [x] Preveri zavihke: primerjava, krizisca, ucne krivulje, hiperparametri
+- [x] Zavihek Mega-politike za statisticno primerjavo
 
 ### Vizualizacija prometa
 - [ ] Zaženi najboljši model v SUMO GUI: `python src/evaluate.py --gui --model <pot_do_modela>.zip --scenario morning_rush`

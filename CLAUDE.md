@@ -156,7 +156,8 @@ n_steps = 720 → 720 * 5 agents = 3600 timesteps = exactly 1 episode per PPO up
 - Schedule controller: `src/schedule_controller.py` (time-of-day dispatch: RL in rush hours, fixed-time otherwise)
 - Curriculum eval helper: `src/eval_helper.py` (subprocess helper for safe baseline/RL eval during curriculum)
 - Simulation analysis: `src/analyze_sim.py` (teleports, edge flows, trip stats)
-- Dashboard: `src/dashboard.py` (generates results/dashboard.html)
+- Dashboard: `src/dashboard.py` (generates results/dashboard.html with 6 tabs including Mega-politike statistical comparison)
+- 24h runner: `src/run_24h.py` (24h simulation with dynamic RL/fixed-time switching + multiprocessing)
 - Custom rewards: `src/custom_reward.py`
 - Agent filter: `src/agent_filter.py` (PettingZoo wrapper, filters to 5 target TLS, restores non-target programs)
 - TLS program restoration: `src/tls_programs.py` (parses .net.xml, restores original signal programs via TraCI, monkey-patches non-target TrafficSignal objects)
@@ -274,18 +275,20 @@ After the HPC sweep (24 configurations x 200 episodes each on 128 CPUs), the top
 
 ## Statistical Testing (24h Simulations)
 
-To validate mega-policies with statistical rigor, we run **50 replications** of each mega-policy (+ baseline) on full 24h simulations with different SUMO seeds.
+To validate mega-policies with statistical rigor, we run **100 replications** of each mega-policy (+ baseline) on full 24h simulations with different SUMO seeds.
 
 **Design:**
 - 10 conditions: 9 mega-policies + 1 baseline (all fixed-time)
-- 50 runs per condition, each with a unique SUMO seed (1-50)
+- 100 runs per condition, each with a unique SUMO seed (1-100)
 - Same route file for all runs (`data/routes/routes_full_day.rou.xml`) — isolates control strategy effect from demand variability
 - Full 24h bimodal demand with directional asymmetry (70/30 morning inbound, 70/30 evening outbound)
 
 **Dynamic RL/Fixed-Time Switching** (`src/run_24h.py`):
 The 24h simulation runs a single continuous SUMO environment for 86400 seconds. At each step, the script checks the simulation hour and switches target TLS between RL control and fixed-time control:
-- Fixed-time: restores original SUMO programLogic via TraCI, patches `set_next_phase` to a passthrough (keeps timing alive but doesn't override SUMO's program)
+- Fixed-time: restores original SUMO programLogic via TraCI, **re-activates automatic cycling via `setProgram()`**, then patches `set_next_phase` to a passthrough (keeps timing alive but doesn't override SUMO's program)
 - RL: restores sumo-rl's phase program, un-patches methods, re-syncs TLS state
+
+**CRITICAL: `setProgram()` after `setProgramLogic()`** — sumo-rl's `_build_phases()` calls `setRedYellowGreenState()` which puts TLS into SUMO manual mode. `setProgramLogic()` alone only updates phase definitions but does NOT re-activate automatic phase cycling. Without the `setProgram()` call, TLS get stuck on phase 0 permanently (one direction always green). This was a bug in the initial implementation that caused all megapolicies to show ~5% degradation vs baseline; the fix resolved it.
 
 **Time Encoding Compatibility:** With `CURRENT_HOUR = 0.0`, the observation's `time_seconds = sim_step`. At sim_step=21600 (6AM), this matches exactly what the morning model saw during training (CURRENT_HOUR=6.0, sim_step=0). Same for evening model at 14:00.
 
@@ -295,12 +298,12 @@ The 24h simulation runs a single continuous SUMO environment for 86400 seconds. 
 - Per-time-window breakdown (night, morning rush, shoulder day, evening rush, shoulder evening)
 - Total teleports, vehicles departed/arrived
 
-**Statistical Analysis:** From 50 runs: mean, median, std, 95% CI, Welch's t-test vs baseline, Mann-Whitney U, Cohen's d.
+**Statistical Analysis:** From 100 runs: mean, median, std, 95% CI, Welch's t-test vs baseline, Mann-Whitney U, Cohen's d.
 
 **New Files:**
 - `src/run_24h.py` — 24h simulation runner with dynamic switching + multiprocessing
 - `src/generate_demand.py --scenario full_day` — generates 24h routes with directional asymmetry
-- `hpc/statistical-test/generate_mega_jobs.py` — generates 10 SLURM scripts
+- `hpc/statistical-test/generate_mega_jobs.py` — generates 10 SLURM scripts (100 runs, 64 workers each)
 - `hpc/statistical-test/submit_all.sh` — submits all jobs
 - `hpc/statistical-test/mega_*.slurm` — 9 mega + 1 baseline SLURM scripts
 
@@ -321,7 +324,26 @@ python src/run_24h.py --baseline --num_runs 1 --num_workers 1 --output_dir /tmp/
 # Results: results/statistical-test/{M1E1,...,M3E3,baseline}/summary.csv
 ```
 
-**Estimated HPC Time:** ~30-60 min per job (50 parallel 24h sims with 64 CPUs), 4h wall time requested.
+**Estimated HPC Time:** ~30-60 min per job (100 runs with 64 parallel workers on 64 CPUs), 8h wall time requested.
+
+## Dashboard — Mega-politike Tab
+
+`src/dashboard.py` generates `results/dashboard.html` with 6 tabs. The 6th tab ("Mega-politike") is dedicated to visualizing statistical test results from `results/statistical-test/`.
+
+**Data loading:** `load_megapolicy_results()` reads all 10 `summary.csv` files, computes descriptive statistics (mean, median, std, 95% CI via t-distribution) per condition, and runs Welch's t-test, Mann-Whitney U, and Cohen's d for each megapolicy vs baseline. All stats are computed in Python (numpy/scipy) and embedded as JSON in the HTML.
+
+**Tab sections:**
+1. **KPI cards** — condition count, best/worst megapolicy, replications, baseline mean, significance count
+2. **Overall comparison** — bar chart with 95% CI error bars (custom Chart.js plugin) + horizontal improvement % chart
+3. **3x3 Heatmap** — morning model (M1-M3) x evening model (E1-E3) matrix, color-coded by improvement %, with significance stars (`*/**/***` for p<0.05/0.01/0.001)
+4. **Per-intersection breakdown** — grouped bar charts for reward and improvement % across 5 intersections (multi-select dropdown)
+5. **Per-time-window breakdown** — grouped bar charts for 6 time windows (night, morning rush, shoulder day, evening rush, shoulder evening, late night)
+6. **Statistical significance table** — full stats with p-value badges, Cohen's d interpretation (Velik/Srednji/Majhen/Zanemarljiv)
+7. **Per-megapolicy drill-down** — per-intersection and per-window stats for a selected megapolicy
+
+**Chart.js error bars:** Implemented via a custom inline plugin (`errorBarPlugin`) that draws CI whisker lines on bar charts. No external dependency needed.
+
+**Graceful degradation:** If `results/statistical-test/` does not exist, the tab is not rendered. Existing tabs (0-4) are unaffected.
 
 ## TODO: Visualization & Demo Plan
 
