@@ -11,6 +11,21 @@ Outputs are saved as PNGs in the experiment's explanations/ folder.
 
 import argparse
 import os
+import sys
+
+# ── SUMO_HOME Detection (HPC Compatibility) ────────────────────────────────
+if "SUMO_HOME" not in os.environ:
+    for path in [
+        os.path.join(os.environ.get("HOME", ""), "sumo_src"),
+        "/usr/share/sumo",
+        "/usr/local/share/sumo",
+        "C:\\Program Files (x86)\\Eclipse\\Sumo" if sys.platform == "win32" else ""
+    ]:
+        if path and os.path.exists(path):
+            os.environ["SUMO_HOME"] = path
+            break
+
+import os
 import pickle
 import numpy as np
 import pandas as pd
