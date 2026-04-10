@@ -108,6 +108,11 @@ def restore_non_target_programs(env, target_agent_ids, original_programs):
             logic.type = 0  # static
             logic.phases = phases
             sumo.trafficlight.setProgramLogic(ts_id, logic)
+            # Re-activate automatic phase cycling: _build_phases() called
+            # setRedYellowGreenState() which put TLS in manual mode.
+            # setProgramLogic() alone only updates phase definitions.
+            # setProgram() is required to resume automatic cycling.
+            sumo.trafficlight.setProgram(ts_id, logic.programID)
         except Exception as e:
             print(f"  WARNING: Could not restore program for {ts_id}: {e}")
             continue

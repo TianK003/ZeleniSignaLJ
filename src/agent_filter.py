@@ -105,9 +105,10 @@ class AgentFilterWrapper(ParallelEnv):
                         logic.type = 0
                         logic.phases = phases
                         sumo.trafficlight.setProgramLogic(ts_id, logic)
+                        sumo.trafficlight.setProgram(ts_id, logic.programID)
                     except Exception:
                         pass
-                        
+
             # Run SUMO mechanically purely for warmup_seconds (no RL updates)
             target_time = sumo.simulation.getTime() + warmup_seconds
             while sumo.simulation.getTime() < target_time:

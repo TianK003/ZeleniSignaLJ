@@ -479,7 +479,9 @@ Za statisticno veljavno primerjavo mega-politik z bazno linijo izvajamo **100 ne
 | 14:00-18:00 | RL (vecerni model) | PPO agent krmili 5 krizisc |
 | 18:00-24:00 | Fiksni cas | Obnovljen izvorni SUMO program |
 
-**Pomembno:** Ob preklopu na fiksni cas se poklice `setProgramLogic()` za obnovitev faz **in** `setProgram()` za ponoven zagon avtomaticnega cikliranja. Brez `setProgram()` bi semaforji obticsali na eni fazi (ena smer stalno zelena), ker `setRedYellowGreenState()` iz sumo-rl postavi semafor v rocni nacin.
+**Pomembno:** Ob preklopu na fiksni cas se poklice `setProgramLogic()` za obnovitev faz **in** `setProgram()` za ponoven zagon avtomaticnega cikliranja. Brez `setProgram()` bi semaforji obticsali na eni fazi (ena smer stalno zelena), ker `setRedYellowGreenState()` iz sumo-rl postavi semafor v rocni nacin. Ta popravek je potreben na dveh mestih:
+1. **Ciljni semaforji** (`run_24h.py`, `_switch_to_fixed_time`) — ob preklopu iz RL v fiksni cas
+2. **Neciljni semaforji** (`tls_programs.py`, `restore_non_target_programs`) — ob inicializaciji okolja, ko sumo-rl zamenja programe vseh 37 semaforjev. Brez `setProgram()` je 32 neciljnih semaforjev obticsalo celotno 24-urno simulacijo, kar je povzrocilo -187% degradacijo v nocnem oknu (00:00-06:00).
 
 ### Merjene metrike (na ponovitev)
 

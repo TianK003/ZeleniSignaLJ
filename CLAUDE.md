@@ -288,7 +288,9 @@ The 24h simulation runs a single continuous SUMO environment for 86400 seconds. 
 - Fixed-time: restores original SUMO programLogic via TraCI, **re-activates automatic cycling via `setProgram()`**, then patches `set_next_phase` to a passthrough (keeps timing alive but doesn't override SUMO's program)
 - RL: restores sumo-rl's phase program, un-patches methods, re-syncs TLS state
 
-**CRITICAL: `setProgram()` after `setProgramLogic()`** — sumo-rl's `_build_phases()` calls `setRedYellowGreenState()` which puts TLS into SUMO manual mode. `setProgramLogic()` alone only updates phase definitions but does NOT re-activate automatic phase cycling. Without the `setProgram()` call, TLS get stuck on phase 0 permanently (one direction always green). This was a bug in the initial implementation that caused all megapolicies to show ~5% degradation vs baseline; the fix resolved it.
+**CRITICAL: `setProgram()` after `setProgramLogic()`** — sumo-rl's `_build_phases()` calls `setRedYellowGreenState()` which puts TLS into SUMO manual mode. `setProgramLogic()` alone only updates phase definitions but does NOT re-activate automatic phase cycling. Without the `setProgram()` call, TLS get stuck on a single phase permanently. This bug appeared in two places:
+1. **Target TLS in `run_24h.py`** (`_switch_to_fixed_time`): Fixed — caused ~5% overall degradation.
+2. **Non-target TLS in `tls_programs.py`** (`restore_non_target_programs`): Fixed — caused 32 non-target TLS to be stuck for the entire simulation, resulting in -187% degradation during the night_0006 window (00:00-06:00) where no preceding RL period could compensate. The same fix was also applied to `agent_filter.py`'s warmup loop.
 
 **Time Encoding Compatibility:** With `CURRENT_HOUR = 0.0`, the observation's `time_seconds = sim_step`. At sim_step=21600 (6AM), this matches exactly what the morning model saw during training (CURRENT_HOUR=6.0, sim_step=0). Same for evening model at 14:00.
 
