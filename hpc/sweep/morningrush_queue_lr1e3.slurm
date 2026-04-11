@@ -3,7 +3,7 @@
 #SBATCH --job-name=zs_morningrush_queue_lr1e3
 #SBATCH --output=logs/zs_morningrush_queue_lr1e3_%j.out
 #SBATCH --error=logs/zs_morningrush_queue_lr1e3_%j.err
-#SBATCH --time=16:00:00
+#SBATCH --time=36:00:00
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -14,6 +14,6 @@ source hpc/common.sh
 
 srun python src/experiment.py \
     --num_cpus 128 \
-    --episode_count 200 \
+    --episode_count 150 \
     --scenario morning_rush --reward_fn queue --learning_rate 0.001 \
-    --tag morningrush_queue_lr1e3_200ep
+    --tag morningrush_queue_lr1e3

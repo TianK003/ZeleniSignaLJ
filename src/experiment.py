@@ -602,17 +602,19 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     callbacks = [TrainingLogCallback(log_path, print_freq=5000,
                                      steps_per_episode=STEPS_PER_EPISODE)]
                                      
-    # Checkpoint every N episodes. CheckpointCallback.save_freq counts
-    # _on_step() calls (one per global 'brain' step), not total timesteps.
-    # Total timesteps between saves = save_freq * num_envs.
-    num_envs = num_cpus * NUM_AGENTS
-    checkpoint_freq = max(1, (episodes_per_save * STEPS_PER_EPISODE) // num_envs)
+    # Checkpoint every N episodes. CheckpointCallback.save_freq counts _on_step()
+    # calls — which fire ONCE per env.step() regardless of num_envs. Each env.step()
+    # advances all envs by 1 SUMO tick (DELTA_TIME seconds). So calls per episode =
+    # num_seconds // DELTA_TIME. Do NOT divide by num_envs — that caused the callback
+    # to fire ~15× per episode with 128 CPUs instead of once per 10 episodes.
+    checkpoint_freq = max(1, episodes_per_save * (num_seconds // DELTA_TIME))
     
     checkpoint_dir = os.path.join(run_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
     
     print(f"  [Checkpoints] Saving every {episodes_per_save} episodes.")
-    print(f"                Internal sync frequency: save every {checkpoint_freq} global brain steps.")
+    print(f"                save_freq={checkpoint_freq} env.step() calls "
+          f"= {checkpoint_freq * DELTA_TIME / 3600:.2f}h simulated time per checkpoint.")
     print(f"                Destination: {checkpoint_dir}/")
 
     checkpoint_callback = CheckpointCallback(
@@ -820,8 +822,8 @@ def main():
                         help="Override entropy coefficient (default from config.py: 0.05).")
     parser.add_argument("--entropy_annealing", action="store_true",
                         help="Linearly anneal entropy from ent_coef to 0.01 over training.")
-    parser.add_argument("--episodes_per_save", type=int, default=25,
-                        help="Save a model checkpoint every N episodes (default: 25).")
+    parser.add_argument("--episodes_per_save", type=int, default=10,
+                        help="Save a model checkpoint every N episodes (default: 10).")
     parser.add_argument("--scenario", type=str, default="uniform",
                         choices=list(SCENARIO_PRESETS.keys()),
                         help="Demand scenario. Sets route_file, num_seconds, and "
@@ -864,6 +866,10 @@ def main():
         print(f"  Episode count: {args.episode_count} episodes "
               f"= {args.total_timesteps} timesteps "
               f"({STEPS_PER_EPISODE} per episode)")
+        # Auto-append _{N}ep suffix to tag if not already present
+        ep_suffix = f"_{args.episode_count}ep"
+        if not args.tag.endswith(ep_suffix):
+            args.tag = args.tag + ep_suffix
     elif args.total_timesteps is None:
         args.total_timesteps = 100_000  # default
 
