@@ -88,6 +88,12 @@ python src/dashboard.py
 # 7. Evalvacija modela po vseh scenarijih koničnih ur
 python src/evaluate.py --model results/experiments/XXXXX/ppo_shared_policy.zip
 python src/evaluate.py --model models/ppo_morning_rush_final.zip --scenario morning_rush
+
+# 8. Razložljivost modela (SHAP, odločitvena drevesa, UMAP)
+python src/collect_states.py --model_path results/experiments/XXXXX/ppo_shared_policy.zip \
+    --scenario morning_rush --episodes 12
+python src/explain.py --data_path results/experiments/XXXXX/harvested_data.pkl
+# Odpri results/experiments/XXXXX/explanations/ za slike
 ```
 
 ## Generiranje prometnega povpraševanja (`generate_demand.py`)
@@ -186,6 +192,106 @@ python src/evaluate.py
 ```
 
 Izhod: `results/rush_hour_comparison.csv` (primerjava po scenarijih) + `results/comparison_summary.csv` (po križiščih).
+
+## Razložljivost modela (Interpretability)
+
+Dvostopenjski postopek za razlago naučene politike. Najprej zbiramo podatke iz modela, nato generiramo vizualizacije.
+
+### 1. Zbiranje stanj (`collect_states.py`)
+
+Zažene naučen PPO model skozi več epizod in shrani opazovanja, akcije, 64-dimenzionalne aktivacije latentne plasti in metapodatke v `harvested_data.pkl`. Ure dneva so naključne znotraj okna scenarija, kar zagotovi pokritost različnih prometnih obremenitev.
+
+```bash
+# Zberi podatke iz modela jutranje konice (ure 6-10h, ustrezne poti)
+python src/collect_states.py --model_path results/experiments/XXXXX/ppo_shared_policy.zip \
+    --scenario morning_rush --episodes 12
+
+# Zberi podatke iz modela večerne konice (ure 14-18h)
+python src/collect_states.py --model_path results/experiments/YYYYY/ppo_shared_policy.zip \
+    --scenario evening_rush --episodes 12
+
+# Mega-politika: oba modela s schedule controllerjem (40% jutranja, 40% večerna, 20% ostalo)
+python src/collect_states.py --megapolicy \
+    --model_morning <jutranji_model>.zip \
+    --model_evening <vecerni_model>.zip \
+    --episodes 12 --output_dir results/megapolicy_explain/
+# -> results/megapolicy_explain/harvested_data_megapolicy.pkl
+```
+
+| Parameter | Opis |
+|-----------|------|
+| `--model_path` | Pot do naučenega PPO modela (.zip) |
+| `--scenario` | `morning_rush` / `evening_rush` / `offpeak` / `uniform` — nastavi datoteko poti in razpon ur |
+| `--episodes` | Število epizod za zbiranje (privzeto 12, priporočeno 10-15) |
+| `--output_dir` | Izhodna mapa (privzeto: mapa modela) |
+| `--megapolicy` | Način mega-politike: uporabi oba modela z načrtovalcem |
+| `--model_morning` | Pot do jutranjeega modela (samo `--megapolicy`) |
+| `--model_evening` | Pot do večernega modela (samo `--megapolicy`) |
+
+### 2. Generiranje razlag (`explain.py`)
+
+Iz zbranih podatkov generira tri vrste vizualizacij. Vsa križišča so označena s čitljivimi imeni (Kolodvor, Pivovarna, Slovenska, Trzaska, Askerceva), izhodne datoteke pa so opisno poimenovane (npr. `kolodvor-decision-tree.png`).
+
+```bash
+python src/explain.py --data_path results/experiments/XXXXX/harvested_data.pkl
+# -> results/experiments/XXXXX/explanations/
+```
+
+#### Nadomestno odločitveno drevo (Policy Distillation)
+
+Za vsako od 5 križišč prilagodimo plitvo odločitveno drevo (globina 4) kot **človeku berljiv nadomestek** nevronske politike PPO.
+
+**Analiza faz:** Skripta analizira dejanske SUMO signalne stanje (nize znakov `GGrrGGrr...` za vsako zeleno fazo) in nadzorovane povezave (kateri pasovi dobijo zeleno v kateri fazi). Povezave so združene po izvorni cesti (pristopni krak križišča), nato razporejene v **smerne skupine** (Smer 1, Smer 2, ...). Vsaka smer predstavlja skupino cest, ki vedno dobijo zeleno skupaj. Listni vozlišči drevesa tako kažejo npr. **"Smer 1 + Smer 3"** namesto neberljivega "Faza 2".
+
+**Notranji vozlišči** prikazujejo pogoje v slovenščini (npr. "Vrsta pas 2 ≤ 0.35", "Gostota pas 0 ≤ 0.12", "sin(čas) ≤ -0.50").
+
+**Pokritost PPO** (fidelity) je prikazana z značko v zgornjem levem kotu — delež akcij, pri katerih se drevo ujema s PPO modelom. Če je pokritost < 60 %, drevo slabo aproksimira politiko.
+
+Drevo uporablja kompakten izris (širina poddreves, ne enakomeren razmik listov), kar ga naredi berljivega brez povečevanja.
+
+Izhod: `{ime}-decision-tree.png` (5 slik, npr. `kolodvor-decision-tree.png`)
+
+#### SHAP atribucija značilk (Feature Attribution)
+
+Uporabimo `TreeExplainer` na nadomestnem drevesu za izračun SHAP vrednosti za vsako opazovano značilko. Imena značilk so prevedena v slovenščino:
+
+| Surovo ime | Prikazano ime |
+|------------|---------------|
+| `Density_-123456#0_1` | Gostota pas 1 |
+| `Queue_-123456#0_2` | Vrsta pas 2 |
+| `Phase_0` | Faza 0 |
+| `MinGreenPassed` | Min. zelena pretečena |
+| `SinTime` / `CosTime` | sin(čas) / cos(čas) |
+
+Beeswarm diagram pokaže, katere značilke najbolj vplivajo na izbiro akcije agenta. To razkrije, ali agent "gleda" na prave pasove in ali čas dneva vpliva na odločanje.
+
+Izhod: `{ime}-shap.png` (5 slik, npr. `trzaska-shap.png`)
+
+#### UMAP projekcija latentnega prostora (Latent Space)
+
+64-dimenzionalne aktivacije skrite plasti PPO mreže projiciramo v 2D z UMAP algoritmom.
+
+**Kako brati UMAP diagrame:**
+- Osi (x, y) **nimajo fizikalnega pomena** — sta abstraktni projekciji 64-dimenzionalnega latentnega prostora nevronske mreže. Zato na diagramih ni oznak osi.
+- **Bližje točke = podobna notranja stanja mreže.** Če dve prometni situaciji ležita blizu skupaj, ju je PPO model interno reprezentiral podobno — ne glede na to, ali sta iz istega križišča ali ure.
+- **Ločeni grozdi = model je naučil ločevati režime.** Jasni barvni grozdi kažejo, da je model razvil različne interne strategije za različne pogoje.
+- **Razpršeni diagrami brez grozdov** kažejo, da model ne razlikuje med pogoji v tej dimenziji.
+
+Tri barvanja:
+- **Po akciji** (`umap-actions.png`) — ločeni barvni grozdi = model je naučil ločevati različne signalne odločitve v svojem latentnem prostoru
+- **Po uri dneva** (`umap-time.png`) — gradient od modre do rdeče = model ločuje jutranje prometne razmere od poznejših; pomešane barve = model ne ločuje po uri
+- **Po križišču** (`umap-intersections.png`) — ločeni grozdi po križišču = deljena politika kljub temu razlikuje med lokacijami; pomešani = enako obravnava vsa križišča
+
+### Priporočeno število epizod
+
+| Epizode | Podatkovnih točk | Uporabnost |
+|---------|-------------------|------------|
+| 3 | ~10.800 | Samo za dimni test — UMAP redek |
+| 5 | ~18.000 | Minimalno. Drevesa OK, UMAP redek |
+| **10-15** | **~36.000-54.000** | **Priporočeno.** Stabilne SHAP vrednosti, čisti UMAP grozdi |
+| 30+ | ~108.000+ | Padajoči donosi; UMAP postane počasen |
+
+10-15 epizod zagotovi dobro pokritost prometnih razmer znotraj okna scenarija (ura je naključna vsako epizodo), kar omogoča zaznavanje prometnih režimov v UMAP projekciji.
 
 ## Načrtovalec (Schedule Controller)
 
@@ -291,6 +397,11 @@ flowchart TD
         SCHEDCTRL["src/schedule_controller.py\načrtovalec konic RL/fiksni"]
     end
 
+    subgraph SRC_EXPLAIN ["Razložljivost"]
+        COLLECT["src/collect_states.py\nzbiranje stanj in latentov"]
+        EXPLAIN["src/explain.py\nSHAP, drevesa, UMAP"]
+    end
+
     subgraph HPC ["HPC — Vega superračunalnik"]
         DEF["hpc/traffic_rl.def\nApptainer vsebnik"]
         SLURM["hpc/sweep/submit_train.sh\nSLURM opravilo"]
@@ -339,6 +450,9 @@ flowchart TD
 
     MODEL --> SCHEDCTRL
 
+    MODEL -->|"zažene model"| COLLECT
+    COLLECT -->|"harvested_data.pkl"| EXPLAIN
+
     DEF --> SLURM
     SLURM -->|"zažene na Vegi"| EXPERIMENT
 ```
@@ -364,8 +478,10 @@ zeleni-signalj/
 │   ├── generate_demand.py    # Generiranje povpraševanja (uniform + scenariji + full_day)
 │   ├── schedule_controller.py  # Načrtovalec: RL v konicah, fiksni čas drugače
 │   ├── eval_helper.py        # Pomočnik za evalvacijo v podprocesih (curriculum)
-│   ├── analyze_sim.py        # Analiza SUMO izhoda (teleporti, pretoki)
-│   └── dashboard.py          # HTML nadzorna plosca (6 zavihkov vkljucno z mega-politikami)
+│   ├── collect_states.py      # Zbiranje stanj in latentnih aktivacij iz naučenega modela
+│   ├── explain.py             # Razložljivost: SHAP, odločitvena drevesa, UMAP
+│   ├── analyze_sim.py         # Analiza SUMO izhoda (teleporti, pretoki)
+│   └── dashboard.py           # HTML nadzorna plosca (6 zavihkov vkljucno z mega-politikami)
 ├── hpc/
 │   ├── common.sh             # Skupna HPC nastavitev (venv, SUMO_HOME)
 │   ├── traffic_rl.def        # Apptainer definicija vsebnika
@@ -576,10 +692,18 @@ Nacrt za pripravo koncne predstavitve za sodnike hackathona.
 - [ ] Posnimi 30-sekundni video zaslona SUMO GUI kot rezervo (ffmpeg ali OBS)
 - [ ] Priprava toplotne karte prometnih čakalnih vrst (baseline vs. RL, po korakih)
 
+### Razložljivost
+- [ ] Zberi stanja iz najboljšega modela: `python src/collect_states.py --model_path <pot>.zip --episodes 12`
+- [ ] Generiraj razlage: `python src/explain.py --data_path <pot>/harvested_data.pkl`
+- [ ] Preglej odločitvena drevesa: katera značilka (pas, faza, čas) poganja odločitve?
+- [ ] Preglej SHAP diagrame: ali agent "gleda" na prave pasove?
+- [ ] Preglej UMAP projekcije: ali se oblikujejo grozdi po urah / akcijah?
+
 ### Predstavitev
 - [ ] Kontekstna slika: `data/media/Observed_intersections.png` — 5 križišč na zemljevidu
 - [ ] Arhitekturni diagram: Mermaid diagram iz README-ja
 - [ ] Nadzorna plošča v živo: odpri `results/dashboard.html`, pokaži zavihke
+- [ ] Razložljivost: pokaži odločitveno drevo + UMAP projekcijo za najboljše križišče
 - [ ] SUMO GUI demo v živo ALI predposneti video
 - [ ] Zaključni diapozitiv: tabela scenarij x nagradna funkcija x izboljšanje %
 

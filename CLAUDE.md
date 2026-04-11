@@ -76,6 +76,14 @@ netconvert --osm-files data/osm/bleiweisova.osm \
 - **`generate_demand.py`** (`src/generate_demand.py`): Unified demand generator. Two modes: `--profile uniform` for constant-rate smoke tests, and `--scenario morning_rush|evening_rush|offpeak|all` for realistic rush-hour route files using the bimodal curve. Rush scenarios have directional asymmetry (70% inbound morning / 70% outbound evening) via two trip batches with different `fringe_factor` values. Output files: `routes_morning_rush.rou.xml`, `routes_evening_rush.rou.xml`, `routes_offpeak.rou.xml`. Core function `write_demand_xml()` is imported by `experiment.py`.
 - **`schedule_controller.py`** (`src/schedule_controller.py`): Production deployment module. `ScheduleController` loads two PPO models (morning + evening) and dispatches to the correct one based on the hour of day. Rush hour windows (06:00-10:00, 14:00-18:00) use RL; all other times use fixed-time programs. Can run full simulation episodes with time-aware control via `run_episode()`.
 - **`eval_helper.py`** (`src/eval_helper.py`): Subprocess helper for safe evaluation during curriculum learning. Called by `experiment.py` via `subprocess.run()` to run baseline and RL evaluation in separate SUMO processes (libsumo cannot be re-initialized in the same process).
+- **Interpretability pipeline** (`src/collect_states.py` + `src/explain.py`): Two-step post-hoc analysis of trained models.
+  - **`collect_states.py`**: Runs the PPO model (forced to CPU for speed) through N episodes (recommended 10-15, default 12) with randomized hours within the scenario window. Harvests observations, actions, 64-dim latent layer activations, metadata, and **phase definitions** (green phase state strings + controlled links per intersection via TraCI) into `harvested_data.pkl`. Phase info is collected after the first `env.reset()` (TraCI must be live). Supports `--scenario morning_rush|evening_rush|offpeak|uniform` for single-model harvesting and `--megapolicy --model_morning --model_evening` for schedule-controller dispatch. Episode duration capped at 1h regardless of scenario to keep harvest fast.
+  - **`explain.py`**: Consumes the pickle and generates three types of visualizations per intersection, all using human-readable names (Kolodvor, Pivovarna, etc.) and Slovenian labels:
+    1. **Surrogate Decision Trees** — depth-4 `DecisionTreeClassifier` fit per intersection. Custom renderer (not sklearn's `plot_tree`) with compact subtree-width-based layout. Leaf nodes show which approach directions get green (e.g. "Smer 1 + Smer 3") determined by analyzing phase state strings — links are grouped by source edge, filtered to signalized-only (exclude passthrough), clustered by co-activation pattern. Internal nodes show split conditions with shortened Slovenian feature names. "Pokritost PPO: N%" badge shows tree fidelity.
+    2. **SHAP beeswarm plots** — `TreeExplainer` on the surrogate tree, with class names mapped to approach direction labels. Feature names shortened to Slovenian (e.g. "Vrsta pas 2", "Gostota pas 0", "sin(čas)").
+    3. **UMAP projections** — 64-dim latent activations projected to 2D, colored by action, time-of-day, and intersection. Axes hidden (dimensions are abstract — no physical meaning). **How to interpret:** closer points = similar internal PPO representations = similar traffic situations. Distinct color clusters = model learned to separate those conditions internally. Mixed colors = model doesn't differentiate along that dimension. Action plot shows if decisions form distinct clusters; time plot shows if model distinguishes rush-hour vs off-peak; intersection plot shows if shared policy differentiates between locations.
+  - Observations are zero-padded to max obs size across all 5 intersections; `explain.py` trims each intersection's matrix to its actual feature count before fitting.
+  - Output files use descriptive names: `kolodvor-decision-tree.png`, `trzaska-shap.png`, `umap-actions.png`, etc.
 - **Phase-based control**: agents select from predefined valid phase combinations (not individual lights)
 - **Queue-length penalty** as primary reward function: `R(t) = -sum(halted_vehicles)`
 - **Baseline**: `fixed_ts=True` in SumoEnvironment — runs real OSM signal programs untouched
@@ -161,6 +169,8 @@ n_steps = 720 → 720 * 5 agents = 3600 timesteps = exactly 1 episode per PPO up
 - Custom rewards: `src/custom_reward.py`
 - Agent filter: `src/agent_filter.py` (PettingZoo wrapper, filters to 5 target TLS, restores non-target programs)
 - TLS program restoration: `src/tls_programs.py` (parses .net.xml, restores original signal programs via TraCI, monkey-patches non-target TrafficSignal objects)
+- State harvester: `src/collect_states.py` (runs trained PPO model on CPU, records obs/actions/latents/phase_info to `harvested_data.pkl`; `--scenario` for single-model, `--megapolicy` for dual-model dispatch)
+- Interpretability: `src/explain.py` (from `harvested_data.pkl`: surrogate decision trees with approach-direction labels, SHAP beeswarm plots, UMAP latent projections; all in Slovenian with human-readable intersection names)
 
 ## Development Environment
 - Windows 11 + WSL2 Ubuntu (WSLg for SUMO GUI)
@@ -213,6 +223,19 @@ python src/experiment.py --max_hours 1.0 --tag 1h_local
 
 # Raw timesteps (3600 per episode with 5 agents)
 python src/experiment.py --total_timesteps 180000 --tag raw_50ep
+
+# Interpretability: harvest states from a morning rush model
+python src/collect_states.py --model_path results/experiments/XXXXX/ppo_shared_policy.zip --scenario morning_rush --episodes 12
+
+# Interpretability: harvest states from an evening rush model
+python src/collect_states.py --model_path results/experiments/XXXXX/ppo_shared_policy.zip --scenario evening_rush --episodes 12
+
+# Interpretability: harvest states from a megapolicy (both models + schedule controller)
+python src/collect_states.py --megapolicy --model_morning <morning>.zip --model_evening <evening>.zip --episodes 12 --output_dir results/megapolicy_explain/
+
+# Interpretability: generate SHAP, decision tree, and UMAP visualizations
+python src/explain.py --data_path results/experiments/XXXXX/harvested_data.pkl
+# -> results/experiments/XXXXX/explanations/{tree_*.png, shap_*.png, umap_*.png}
 
 # Compare all experiments
 python src/experiment.py --compare_only
