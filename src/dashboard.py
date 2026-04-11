@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -1944,6 +1945,70 @@ def prompt_supplement(incomplete):
     return True
 
 
+def find_missing_explanations():
+    """Find experiments that have a trained model but no explanations/ folder."""
+    missing = []
+    if not os.path.exists(EXPERIMENTS_DIR):
+        return missing
+
+    for run_id in sorted(os.listdir(EXPERIMENTS_DIR)):
+        run_dir = os.path.join(EXPERIMENTS_DIR, run_id)
+        model_path = os.path.join(run_dir, "ppo_shared_policy.zip")
+        expl_dir = os.path.join(run_dir, "explanations")
+
+        if os.path.exists(model_path) and not os.path.isdir(expl_dir):
+            missing.append(run_id)
+
+    return missing
+
+
+def prompt_generate_explanations(missing):
+    """Ask user whether to generate explanations for experiments missing them."""
+    print(f"\nFound {len(missing)} experiment(s) with trained models but no explanations:")
+    for rid in missing[:10]:
+        print(f"  - {rid}")
+    if len(missing) > 10:
+        print(f"  ... and {len(missing) - 10} more")
+
+    print(f"\nThe Interpretibilnost tab will be empty for these experiments.")
+    print(f"Options:")
+    print(f"  [y] Generate explanations now (collect_states + explain.py)")
+    print(f"  [n] Skip — generate dashboard without explanations")
+
+    try:
+        choice = input("\nGenerate missing explanations? [y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+    if choice not in ("y", "yes"):
+        return False
+
+    import subprocess as _sp
+
+    try:
+        workers_input = input("Number of parallel workers (default 4, max ~your CPU cores): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        workers_input = ""
+
+    num_workers = int(workers_input) if workers_input.isdigit() and int(workers_input) > 0 else 4
+
+    print(f"\nRunning generate_all_explanations.py with {num_workers} workers...\n")
+
+    result = _sp.run(
+        [sys.executable, "src/generate_all_explanations.py",
+         "--num_workers", str(num_workers), "--episodes", "12"],
+        env={**os.environ, "LIBSUMO_AS_TRACI": os.environ.get("LIBSUMO_AS_TRACI", "1")},
+    )
+
+    if result.returncode != 0:
+        print(f"\nExplanation generation exited with code {result.returncode}.")
+        print("Generating dashboard with whatever explanations are available.\n")
+
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate results dashboard")
     parser.add_argument("--output", type=str, default="results/dashboard.html")
@@ -1957,6 +2022,10 @@ def main():
         incomplete = find_incomplete_experiments()
         if incomplete:
             prompt_supplement(incomplete)
+
+        missing_expl = find_missing_explanations()
+        if missing_expl:
+            prompt_generate_explanations(missing_expl)
 
     experiments = load_experiments()
     megapolicy_data = load_megapolicy_results()
