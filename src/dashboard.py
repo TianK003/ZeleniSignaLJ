@@ -77,13 +77,25 @@ def load_experiments():
             except Exception:
                 pass
 
-        # Scan for interpretability explanations (images)
-        explanations = []
+        # Scan for interpretability explanations (images + JSON)
+        # Structure: explanations/{category}/{file}.png|.json
+        # Categories: decision-trees, shap, umap, t-sne
+        explanations = {}
         expl_dir = os.path.join(run_dir, "explanations")
         if os.path.exists(expl_dir):
-            for f in sorted(os.listdir(expl_dir)):
-                if f.endswith(".png") or f.endswith(".jpg"):
-                    explanations.append(f)
+            for entry in sorted(os.listdir(expl_dir)):
+                sub = os.path.join(expl_dir, entry)
+                if os.path.isdir(sub):
+                    images = sorted(f for f in os.listdir(sub)
+                                    if f.endswith(".png") or f.endswith(".jpg"))
+                    jsons = sorted(f for f in os.listdir(sub)
+                                   if f.endswith(".json"))
+                    if images or jsons:
+                        explanations[entry] = {"images": images, "jsons": jsons}
+                elif entry.endswith(".png") or entry.endswith(".jpg"):
+                    # Legacy: flat files in explanations/
+                    explanations.setdefault("_flat", {"images": [], "jsons": []})
+                    explanations["_flat"]["images"].append(entry)
 
         experiments.append({
             "meta": meta,
@@ -152,23 +164,24 @@ def _desc_stats(series):
 
 
 def _compare(mega_series, baseline_series):
-    """Welch's t-test, Mann-Whitney U, Cohen's d between two Series."""
-    t_stat, t_p = stats.ttest_ind(mega_series, baseline_series, equal_var=False)
-    u_stat, u_p = stats.mannwhitneyu(
-        mega_series, baseline_series, alternative='two-sided')
-    s1 = float(mega_series.std(ddof=1))
-    s2 = float(baseline_series.std(ddof=1))
-    pooled_std = np.sqrt((s1 ** 2 + s2 ** 2) / 2)
-    cohens_d = ((mega_series.mean() - baseline_series.mean()) / pooled_std
-                if pooled_std > 0 else 0.0)
+    """Paired t-test, Wilcoxon signed-rank, Cohen's d for matched pairs."""
+    differences = mega_series.values - baseline_series.values
+    t_stat, t_p = stats.ttest_rel(mega_series, baseline_series)
+    try:
+        w_stat, w_p = stats.wilcoxon(differences)
+    except ValueError:
+        w_stat, w_p = 0.0, 1.0  # all differences identical
+    # Cohen's d for paired data
+    d_std = float(np.std(differences, ddof=1))
+    cohens_d = float(np.mean(differences)) / d_std if d_std > 0 else 0.0
     bl_abs = abs(float(baseline_series.mean()))
     improvement_pct = (
         (float(mega_series.mean()) - float(baseline_series.mean()))
         / bl_abs * 100 if bl_abs > 0 else 0.0)
     return {
         "improvement_pct": float(improvement_pct),
-        "welch_t": float(t_stat), "welch_p": float(t_p),
-        "mann_whitney_u": float(u_stat), "mann_whitney_p": float(u_p),
+        "paired_t": float(t_stat), "paired_t_p": float(t_p),
+        "wilcoxon_w": float(w_stat), "wilcoxon_p": float(w_p),
         "cohens_d": float(cohens_d),
     }
 
@@ -229,24 +242,35 @@ def load_megapolicy_results(base_dir=STATISTICAL_TEST_DIR):
             }
         cond_list.append(entry)
 
-    # Comparisons: each megapolicy vs baseline
+    # Comparisons: each megapolicy vs baseline (paired by seed)
     comparisons = []
     for tag, cdata in conditions.items():
         if cdata["meta"].get("baseline", False):
             continue
-        df = cdata["df"]
+        cond_df = cdata["df"]
+        # Merge on seed to ensure paired alignment
+        merged = pd.merge(
+            cond_df[["seed", "total_reward"]],
+            bl_df[["seed", "total_reward"]],
+            on="seed", suffixes=("_mega", "_bl"))
         comp = {
             "tag": tag,
-            **_compare(df["total_reward"], bl_df["total_reward"]),
+            **_compare(merged["total_reward_mega"], merged["total_reward_bl"]),
             "intersections": {},
             "windows": {},
         }
         for iname in INTERSECTION_NAMES:
+            col = f"reward_{iname}"
+            m = pd.merge(cond_df[["seed", col]], bl_df[["seed", col]],
+                         on="seed", suffixes=("_mega", "_bl"))
             comp["intersections"][iname] = _compare(
-                df[f"reward_{iname}"], bl_df[f"reward_{iname}"])
+                m[f"{col}_mega"], m[f"{col}_bl"])
         for wname in WINDOW_ORDER:
+            col = f"reward_{wname}"
+            m = pd.merge(cond_df[["seed", col]], bl_df[["seed", col]],
+                         on="seed", suffixes=("_mega", "_bl"))
             comp["windows"][wname] = _compare(
-                df[f"reward_{wname}"], bl_df[f"reward_{wname}"])
+                m[f"{col}_mega"], m[f"{col}_bl"])
         comparisons.append(comp)
 
     # 3x3 heatmap
@@ -262,7 +286,7 @@ def load_megapolicy_results(base_dir=STATISTICAL_TEST_DIR):
             row_t.append(t)
             comp = next((c for c in comparisons if c["tag"] == t), None)
             row_v.append(comp["improvement_pct"] if comp else 0)
-            row_p.append(comp["welch_p"] if comp else 1)
+            row_p.append(comp["paired_t_p"] if comp else 1)
         heatmap_values.append(row_v)
         heatmap_pvalues.append(row_p)
         heatmap_tags.append(row_t)
@@ -452,6 +476,16 @@ const megaData = {mega_json};
 const COLORS = ['#4ade80','#60a5fa','#f472b6','#facc15','#a78bfa','#fb923c','#34d399','#f87171','#38bdf8','#c084fc'];
 const INT_COLORS = {{'Kolodvor':'#60a5fa','Pivovarna':'#4ade80','Slovenska':'#f472b6','Trzaska':'#facc15','Askerceva':'#a78bfa'}};
 
+// ── Mutable state (must be initialized before render() runs) ──
+var intBarInst, intPctInst, intTrendInst;
+var trainChartInst, stepChartInst, hpScatter1Inst, hpScatter2Inst;
+var megaOverallInst, megaImprovInst;
+var megaIntRewardInst, megaIntImprovInst;
+var megaWindowRewardInst, megaWindowImprovInst;
+var _tabCharts = {{}};
+var _scenarioData = {{}};
+var _scenarioSortState = {{}};
+
 const app = document.getElementById('app');
 document.getElementById('genTime').textContent = 'Generirano: ' + new Date().toLocaleString('sl-SI');
 document.getElementById('genInfo').textContent = experiments.length + ' eksperimentov';
@@ -495,59 +529,46 @@ function render() {{
 
   // ── TABS ──
   h += `<div class="tabs">
-    <div class="tab active" onclick="switchTab(0)">Primerjava</div>
-    <div class="tab" onclick="switchTab(1)">Krizisca</div>
-    <div class="tab" onclick="switchTab(2)">Ucenje</div>
-    <div class="tab" onclick="switchTab(3)">Hiperparametri</div>
-    <div class="tab" onclick="switchTab(4)">Podrobnosti</div>
-    <div class="tab" id="explTab" onclick="switchTab(6)">Interpretibilnost</div>
-    ${{megaData ? '<div class="tab" onclick="switchTab(5)">Mega-politike</div>' : ''}}
+    <div class="tab active" onclick="switchTab(0)">Jutranja konica</div>
+    <div class="tab" onclick="switchTab(1)">Vecerna konica</div>
+    ${{megaData ? '<div class="tab" onclick="switchTab(2)">Mega-politike</div>' : ''}}
+    <div class="tab" onclick="switchTab(3)">Krizisca</div>
+    <div class="tab" onclick="switchTab(4)">Ucenje</div>
+    <div class="tab" onclick="switchTab(5)">Hiperparametri</div>
+    <div class="tab" onclick="switchTab(6)">Podrobnosti</div>
+    <div class="tab" onclick="switchTab(7)">Interpretibilnost</div>
   </div>`;
 
+  // Filter experiments by scenario
+  const morningData = experiments.filter(e => e.meta.scenario === 'morning_rush');
+  const eveningData = experiments.filter(e => e.meta.scenario === 'evening_rush');
+
   // ══════════════════════════════════════════
-  // TAB 0: Experiment Comparison
+  // TAB 0: Jutranja konica (morning rush experiments)
   // ══════════════════════════════════════════
   h += '<div class="tab-content active" id="tab0">';
-
-  h += `<div class="controls">
-    <label>Iskanje: <input type="text" id="filterText" placeholder="oznaka ali ID..." oninput="applyFilters()"></label>
-    <label>Min korakov: <input type="number" id="filterMinSteps" value="0" style="width:80px" oninput="applyFilters()"></label>
-    <label>Zadnjih N: <input type="number" id="filterLastN" value="" placeholder="vse" style="width:60px" oninput="applyFilters()"></label>
-  </div>`;
-
-  // Comparison bar chart
-  h += '<div class="grid-2">';
-  h += '<div class="chart-box"><div class="card-title">Skupna nagrada: bazna linija vs RL (abs. vrednost, nizja = boljsa)</div><canvas id="compChart"></canvas></div>';
-  h += '<div class="chart-box"><div class="card-title">Izboljsanje po eksperimentih (%)</div><canvas id="improvChart"></canvas></div>';
-  h += '</div>';
-
-  // Experiment table
-  h += `<div class="card" style="overflow-x:auto;">
-    <div class="card-title">Vsi eksperimenti</div>
-    <div class="table-wrap">
-    <table id="expTable">
-      <thead><tr>
-        <th onclick="sortTable(0)">Oznaka</th>
-        <th onclick="sortTable(1)">Datum</th>
-        <th onclick="sortTable(2)">Koraki</th>
-        <th onclick="sortTable(3)">Bazna linija</th>
-        <th onclick="sortTable(4)">RL Agent</th>
-        <th onclick="sortTable(5)">Izboljsanje</th>
-        <th onclick="sortTable(6)">LR</th>
-        <th onclick="sortTable(7)">Ent. koef.</th>
-        <th onclick="sortTable(8)">Cas</th>
-      </tr></thead>
-      <tbody></tbody>
-    </table>
-    </div>
-  </div>`;
-
+  if (morningData.length === 0) {{
+    h += '<div class="no-data"><p>Ni eksperimentov za jutranjo konico.</p><p style="font-size:13px;margin-top:8px">Zazenite: <code>python src/experiment.py --scenario morning_rush --tag ...</code></p></div>';
+  }} else {{
+    h += renderComparisonTabHTML('morning', morningData);
+  }}
   h += '</div>'; // tab0
 
   // ══════════════════════════════════════════
-  // TAB 1: Per-intersection breakdown
+  // TAB 1: Vecerna konica (evening rush experiments)
   // ══════════════════════════════════════════
   h += '<div class="tab-content" id="tab1">';
+  if (eveningData.length === 0) {{
+    h += '<div class="no-data"><p>Ni eksperimentov za vecerno konico.</p><p style="font-size:13px;margin-top:8px">Zazenite: <code>python src/experiment.py --scenario evening_rush --tag ...</code></p></div>';
+  }} else {{
+    h += renderComparisonTabHTML('evening', eveningData);
+  }}
+  h += '</div>'; // tab1
+
+  // ══════════════════════════════════════════
+  // TAB 3: Per-intersection breakdown
+  // ══════════════════════════════════════════
+  h += '<div class="tab-content" id="tab3">';
 
   h += `<div class="controls">
     <label>Eksperiment: <select id="intExpSelect" onchange="updateIntersections()">
@@ -568,12 +589,12 @@ function render() {{
   // Cross-experiment intersection comparison
   h += '<div class="chart-box"><div class="card-title">Izboljsanje po kriziscih skozi eksperimente</div><canvas id="intTrendChart"></canvas></div>';
 
-  h += '</div>'; // tab1
+  h += '</div>'; // tab3
 
   // ══════════════════════════════════════════
-  // TAB 2: Training curves
+  // TAB 4: Training curves
   // ══════════════════════════════════════════
-  h += '<div class="tab-content" id="tab2">';
+  h += '<div class="tab-content" id="tab4">';
 
   h += '<div class="cb-row" id="curveSelect"></div>';
   h += '<div class="grid-2">';
@@ -583,12 +604,12 @@ function render() {{
 
   h += '<div class="info-text">Izberite eksperimente zgoraj za prikaz krivulj ucenja. Podatki so na voljo sele po novem zagonu z posodobljenim kodom.</div>';
 
-  h += '</div>'; // tab2
+  h += '</div>'; // tab4
 
   // ══════════════════════════════════════════
-  // TAB 3: Hyperparameter comparison
+  // TAB 5: Hyperparameter comparison
   // ══════════════════════════════════════════
-  h += '<div class="tab-content" id="tab3">';
+  h += '<div class="tab-content" id="tab5">';
 
   h += '<div class="grid-2">';
   h += '<div class="chart-box"><div class="card-title">Koraki vs. izboljsanje</div><canvas id="hpScatter1"></canvas></div>';
@@ -603,12 +624,12 @@ function render() {{
     </tr></thead><tbody></tbody></table>
     </div></div>`;
 
-  h += '</div>'; // tab3
+  h += '</div>'; // tab5
 
   // ══════════════════════════════════════════
-  // TAB 4: Detailed experiment info
+  // TAB 6: Detailed experiment info
   // ══════════════════════════════════════════
-  h += '<div class="tab-content" id="tab4">';
+  h += '<div class="tab-content" id="tab6">';
 
   h += `<div class="controls">
     <label>Eksperiment: <select id="detailExpSelect" onchange="updateDetails()">
@@ -618,20 +639,20 @@ function render() {{
 
   h += '<div id="detailPanel"></div>';
 
-  h += '</div>'; // tab4
+  h += '</div>'; // tab6
 
   // ══════════════════════════════════════════
-  // TAB 5: Mega-politike (statistical test)
+  // TAB 2: Mega-politike (statistical test)
   // ══════════════════════════════════════════
   if (megaData) {{
-    h += '<div class="tab-content" id="tab5">';
+    h += '<div class="tab-content" id="tab2">';
 
     // ── KPI cards ──
     const mComps = megaData.comparisons;
     const bestMega = mComps.reduce((b, c) => c.improvement_pct > b.improvement_pct ? c : b, mComps[0]);
     const worstMega = mComps.reduce((b, c) => c.improvement_pct < b.improvement_pct ? c : b, mComps[0]);
     const blCond = megaData.conditions.find(c => c.is_baseline);
-    const sigCount = mComps.filter(c => c.welch_p < 0.05).length;
+    const sigCount = mComps.filter(c => c.paired_t_p < 0.05).length;
 
     h += '<div class="kpi-grid">';
     h += `<div class="kpi"><div class="kpi-label">Stevilo pogojev</div><div class="kpi-value neutral">${{megaData.conditions.length}}</div><div class="kpi-sub">9 mega-politik + bazna linija</div></div>`;
@@ -639,7 +660,7 @@ function render() {{
     h += `<div class="kpi"><div class="kpi-label">Najslabsa mega-politika</div><div class="kpi-value ${{pctClass(worstMega.improvement_pct)}}">${{fmtPct(worstMega.improvement_pct)}}</div><div class="kpi-sub">${{worstMega.tag}}</div></div>`;
     h += `<div class="kpi"><div class="kpi-label">Ponovitve na pogoj</div><div class="kpi-value neutral">${{blCond ? blCond.n : 50}}</div><div class="kpi-sub">razlicni SUMO seedi</div></div>`;
     h += `<div class="kpi"><div class="kpi-label">Bazna linija (povp.)</div><div class="kpi-value neutral">${{blCond ? fmt(blCond.total_reward.mean, 0) : '-'}}</div><div class="kpi-sub">povp. skupna nagrada</div></div>`;
-    h += `<div class="kpi"><div class="kpi-label">Stat. znacilne (p&lt;0.05)</div><div class="kpi-value ${{sigCount > 0 ? 'positive' : 'neutral'}}">${{sigCount}} / ${{mComps.length}}</div><div class="kpi-sub">Welch t-test</div></div>`;
+    h += `<div class="kpi"><div class="kpi-label">Stat. znacilne (p&lt;0.05)</div><div class="kpi-value ${{sigCount > 0 ? 'positive' : 'neutral'}}">${{sigCount}} / ${{mComps.length}}</div><div class="kpi-sub">Parni t-test</div></div>`;
     h += '</div>';
 
     // ── Overall comparison charts ──
@@ -671,13 +692,13 @@ function render() {{
         const bg = val >= 0
           ? `rgba(74,222,128,${{(0.15 + intensity * 0.45).toFixed(2)}})`
           : `rgba(248,113,113,${{(0.15 + intensity * 0.45).toFixed(2)}})`;
-        h += `<div class="heatmap-cell" style="background:${{bg}}" title="${{tag}}: Welch p=${{pval.toFixed(6)}}">
+        h += `<div class="heatmap-cell" style="background:${{bg}}" title="${{tag}}: Parni t-test p=${{pval.toFixed(6)}}">
           ${{fmtPct(val)}}<span class="sig-marker">${{sig}}</span>
         </div>`;
       }});
     }});
     h += '</div>';
-    h += '<div class="info-text">* p&lt;0.05 &nbsp; ** p&lt;0.01 &nbsp; *** p&lt;0.001 (Welch t-test)</div>';
+    h += '<div class="info-text">* p&lt;0.05 &nbsp; ** p&lt;0.01 &nbsp; *** p&lt;0.001 (Parni t-test)</div>';
     h += '</div>';
 
     // ── Per-intersection breakdown ──
@@ -714,11 +735,11 @@ function render() {{
 
     // ── Statistical significance table ──
     h += '<h2>Statisticna analiza</h2>';
-    h += '<div class="card"><div class="card-title">Primerjava z bazno linijo (Welch t-test, Mann-Whitney U, Cohen d)</div>';
+    h += '<div class="card"><div class="card-title">Primerjava z bazno linijo (Parni t-test, Wilcoxon, Cohen d)</div>';
     h += '<div class="table-wrap"><table id="megaStatsTable"><thead><tr>';
     h += '<th>Mega-politika</th><th>Povp. nagrada</th><th>Mediana</th><th>Std</th>';
-    h += '<th>95% IZ</th><th>Welch t</th><th>Welch p</th>';
-    h += '<th>M-W U</th><th>M-W p</th><th>Cohen d</th><th>Izboljsanje</th>';
+    h += '<th>95% IZ</th><th>Parni t</th><th>Parni p</th>';
+    h += '<th>Wilcoxon W</th><th>Wilcoxon p</th><th>Cohen d</th><th>Izboljsanje</th>';
     h += '</tr></thead><tbody>';
     // Baseline row
     if (blCond) {{
@@ -735,10 +756,10 @@ function render() {{
     mComps.forEach(c => {{
       const cond = megaData.conditions.find(x => x.tag === c.tag);
       const s = cond ? cond.total_reward : {{}};
-      const pBadge = c.welch_p < 0.001 ? 'badge-green' : c.welch_p < 0.01 ? 'badge-green' : c.welch_p < 0.05 ? 'badge-yellow' : 'badge-gray';
-      const pLabel = c.welch_p < 0.001 ? '***' : c.welch_p < 0.01 ? '**' : c.welch_p < 0.05 ? '*' : 'n.s.';
-      const mwpBadge = c.mann_whitney_p < 0.001 ? 'badge-green' : c.mann_whitney_p < 0.01 ? 'badge-green' : c.mann_whitney_p < 0.05 ? 'badge-yellow' : 'badge-gray';
-      const mwpLabel = c.mann_whitney_p < 0.001 ? '***' : c.mann_whitney_p < 0.01 ? '**' : c.mann_whitney_p < 0.05 ? '*' : 'n.s.';
+      const pBadge = c.paired_t_p < 0.001 ? 'badge-green' : c.paired_t_p < 0.01 ? 'badge-green' : c.paired_t_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+      const pLabel = c.paired_t_p < 0.001 ? '***' : c.paired_t_p < 0.01 ? '**' : c.paired_t_p < 0.05 ? '*' : 'n.s.';
+      const wpBadge = c.wilcoxon_p < 0.001 ? 'badge-green' : c.wilcoxon_p < 0.01 ? 'badge-green' : c.wilcoxon_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+      const wpLabel = c.wilcoxon_p < 0.001 ? '***' : c.wilcoxon_p < 0.01 ? '**' : c.wilcoxon_p < 0.05 ? '*' : 'n.s.';
       const absD = Math.abs(c.cohens_d);
       const dLabel = absD > 0.8 ? 'Velik' : absD > 0.5 ? 'Srednji' : absD > 0.2 ? 'Majhen' : 'Zanem.';
       const dBadge = absD > 0.8 ? (c.cohens_d > 0 ? 'badge-green' : 'badge-red') : absD > 0.5 ? 'badge-yellow' : 'badge-gray';
@@ -746,10 +767,10 @@ function render() {{
         <td><strong>${{c.tag}}</strong></td>
         <td>${{fmt(s.mean||0,0)}}</td><td>${{fmt(s.median||0,0)}}</td><td>${{fmt(s.std||0,0)}}</td>
         <td>[${{fmt(s.ci_low||0,0)}}, ${{fmt(s.ci_high||0,0)}}]</td>
-        <td>${{c.welch_t.toFixed(2)}}</td>
-        <td><span class="badge ${{pBadge}}">${{c.welch_p < 0.0001 ? c.welch_p.toExponential(2) : c.welch_p.toFixed(4)}} ${{pLabel}}</span></td>
-        <td>${{fmt(c.mann_whitney_u,0)}}</td>
-        <td><span class="badge ${{mwpBadge}}">${{c.mann_whitney_p < 0.0001 ? c.mann_whitney_p.toExponential(2) : c.mann_whitney_p.toFixed(4)}} ${{mwpLabel}}</span></td>
+        <td>${{c.paired_t.toFixed(2)}}</td>
+        <td><span class="badge ${{pBadge}}">${{c.paired_t_p < 0.0001 ? c.paired_t_p.toExponential(2) : c.paired_t_p.toFixed(4)}} ${{pLabel}}</span></td>
+        <td>${{fmt(c.wilcoxon_w,0)}}</td>
+        <td><span class="badge ${{wpBadge}}">${{c.wilcoxon_p < 0.0001 ? c.wilcoxon_p.toExponential(2) : c.wilcoxon_p.toFixed(4)}} ${{wpLabel}}</span></td>
         <td><span class="badge ${{dBadge}}">${{c.cohens_d.toFixed(3)}} (${{dLabel}})</span></td>
         <td><span class="badge ${{badgeClass(c.improvement_pct)}}">${{fmtPct(c.improvement_pct)}}</span></td>
       </tr>`;
@@ -767,13 +788,34 @@ function render() {{
     h += '</div>';
     h += '<div id="megaDetailPanel"></div>';
 
-    h += '</div>'; // tab5
+    h += '</div>'; // tab2
   }}
+
+  // ══════════════════════════════════════════
+  // TAB 7: Interpretibilnost
+  // ══════════════════════════════════════════
+  h += '<div class="tab-content" id="tab7">';
+  const expsWithExpl = experiments.filter(e => e.explanations && Object.keys(e.explanations).length > 0);
+  let defaultExplIdx = experiments.findIndex(e => e.explanations && Object.keys(e.explanations).length > 0);
+  if (defaultExplIdx < 0) defaultExplIdx = 0;
+  h += `<div class="controls">
+    <label>Eksperiment: <select id="explExpSelect" onchange="updateExplanations()">
+      ${{experiments.map((e, i) => {{
+        const has = e.explanations && Object.keys(e.explanations).length > 0;
+        const label = (e.meta.tag || e.meta.run_id) + (has ? ' ✓' : '');
+        return `<option value="${{i}}" ${{i===defaultExplIdx?'selected':''}}>${{label}}</option>`;
+      }}).join('')}}
+    </select></label>
+    <span class="info-text">${{expsWithExpl.length}} eksperiment(ov) z vizualizacijami</span>
+  </div>`;
+  h += '<div id="explPanel"></div>';
+  h += '</div>'; // tab7
 
   app.innerHTML = h;
 
   // Initialize all views
-  applyFilters();
+  initComparisonTab('morning', morningData);
+  initComparisonTab('evening', eveningData);
   updateIntersections();
   buildCurveSelector();
   updateHyperparams();
@@ -789,27 +831,76 @@ function render() {{
 
 // ── Tab switching ──
 function switchTab(idx) {{
-  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', i === idx));
-  document.querySelectorAll('.tab-content').forEach((t, i) => t.classList.toggle('active', i === idx));
+  document.querySelectorAll('.tab').forEach(t => {{
+    const onclick = t.getAttribute('onclick') || '';
+    const m = onclick.match(/switchTab\\((\\d+)\\)/);
+    t.classList.toggle('active', m && parseInt(m[1]) === idx);
+  }});
+  document.querySelectorAll('.tab-content').forEach(t => {{
+    t.classList.toggle('active', t.id === 'tab' + idx);
+  }});
 }}
 
-// ── Chart instances (var, not let — avoids temporal dead zone when
-//    render() is called before this line during initial script execution) ──
-var compChartInst, improvChartInst, intBarInst, intPctInst, intTrendInst;
-var trainChartInst, stepChartInst, hpScatter1Inst, hpScatter2Inst;
-var megaOverallInst, megaImprovInst;
-var megaIntRewardInst, megaIntImprovInst;
-var megaWindowRewardInst, megaWindowImprovInst;
+// (chart instances and tab state declared above render() call)
 
 // ══════════════════════════════════════════
-// TAB 0: Filtering & comparison
+// TAB 0/1: Scenario-filtered comparison (reusable)
 // ══════════════════════════════════════════
-function getFiltered() {{
-  const text = (document.getElementById('filterText')?.value || '').toLowerCase();
-  const minSteps = parseInt(document.getElementById('filterMinSteps')?.value) || 0;
-  const lastN = parseInt(document.getElementById('filterLastN')?.value) || 0;
 
-  let filtered = experiments.filter(e => {{
+function renderComparisonTabHTML(prefix, exps) {{
+  let h = '';
+
+  h += `<div class="controls">
+    <label>Iskanje: <input type="text" id="${{prefix}}_filterText" placeholder="oznaka ali ID..." oninput="applyScenarioFilters('${{prefix}}')"></label>
+    <label>Min korakov: <input type="number" id="${{prefix}}_filterMinSteps" value="0" style="width:80px" oninput="applyScenarioFilters('${{prefix}}')"></label>
+    <label>Zadnjih N: <input type="number" id="${{prefix}}_filterLastN" value="" placeholder="vse" style="width:60px" oninput="applyScenarioFilters('${{prefix}}')"></label>
+  </div>`;
+
+  // Comparison bar chart
+  h += '<div class="grid-2">';
+  h += `<div class="chart-box"><div class="card-title">Skupna nagrada: bazna linija vs RL (abs. vrednost, nizja = boljsa)</div><canvas id="${{prefix}}_compChart"></canvas></div>`;
+  h += `<div class="chart-box"><div class="card-title">Izboljsanje po eksperimentih (%)</div><canvas id="${{prefix}}_improvChart"></canvas></div>`;
+  h += '</div>';
+
+  // Experiment table
+  h += `<div class="card" style="overflow-x:auto;">
+    <div class="card-title">Eksperimenti (${{exps.length}})</div>
+    <div class="table-wrap">
+    <table id="${{prefix}}_expTable">
+      <thead><tr>
+        <th onclick="sortScenarioTable('${{prefix}}', 0)">Oznaka</th>
+        <th onclick="sortScenarioTable('${{prefix}}', 1)">Datum</th>
+        <th onclick="sortScenarioTable('${{prefix}}', 2)">Koraki</th>
+        <th onclick="sortScenarioTable('${{prefix}}', 3)">Bazna linija</th>
+        <th onclick="sortScenarioTable('${{prefix}}', 4)">RL Agent</th>
+        <th onclick="sortScenarioTable('${{prefix}}', 5)">Izboljsanje</th>
+        <th onclick="sortScenarioTable('${{prefix}}', 6)">LR</th>
+        <th onclick="sortScenarioTable('${{prefix}}', 7)">Ent. koef.</th>
+        <th onclick="sortScenarioTable('${{prefix}}', 8)">Nagradna f.</th>
+        <th onclick="sortScenarioTable('${{prefix}}', 9)">Cas</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+  </div>`;
+
+  return h;
+}}
+
+// Store experiment data per prefix for filtering
+
+function initComparisonTab(prefix, exps) {{
+  _scenarioData[prefix] = exps;
+  applyScenarioFilters(prefix);
+}}
+
+function getScenarioFiltered(prefix) {{
+  const exps = _scenarioData[prefix] || [];
+  const text = (document.getElementById(prefix + '_filterText')?.value || '').toLowerCase();
+  const minSteps = parseInt(document.getElementById(prefix + '_filterMinSteps')?.value) || 0;
+  const lastN = parseInt(document.getElementById(prefix + '_filterLastN')?.value) || 0;
+
+  let filtered = exps.filter(e => {{
     const tag = (e.meta.tag || e.meta.run_id || '').toLowerCase();
     const steps = e.meta.actual_timesteps || e.meta.total_timesteps || 0;
     return tag.includes(text) && steps >= minSteps;
@@ -819,15 +910,18 @@ function getFiltered() {{
   return filtered;
 }}
 
-function applyFilters() {{
-  const filtered = getFiltered();
+function applyScenarioFilters(prefix) {{
+  const filtered = getScenarioFiltered(prefix);
   const labels = filtered.map(e => e.meta.tag || e.meta.run_id);
 
+  // Destroy existing charts for this tab
+  if (_tabCharts[prefix + '_comp']) _tabCharts[prefix + '_comp'].destroy();
+  if (_tabCharts[prefix + '_improv']) _tabCharts[prefix + '_improv'].destroy();
+
   // Comparison bar chart
-  if (compChartInst) compChartInst.destroy();
-  const ctx1 = document.getElementById('compChart')?.getContext('2d');
+  const ctx1 = document.getElementById(prefix + '_compChart')?.getContext('2d');
   if (ctx1) {{
-    compChartInst = new Chart(ctx1, {{
+    _tabCharts[prefix + '_comp'] = new Chart(ctx1, {{
       type: 'bar',
       data: {{
         labels,
@@ -841,11 +935,10 @@ function applyFilters() {{
   }}
 
   // Improvement chart
-  if (improvChartInst) improvChartInst.destroy();
-  const ctx2 = document.getElementById('improvChart')?.getContext('2d');
+  const ctx2 = document.getElementById(prefix + '_improvChart')?.getContext('2d');
   if (ctx2) {{
     const pcts = filtered.map(e => e.meta.improvement_pct || 0);
-    improvChartInst = new Chart(ctx2, {{
+    _tabCharts[prefix + '_improv'] = new Chart(ctx2, {{
       type: 'bar',
       data: {{
         labels,
@@ -874,7 +967,7 @@ function applyFilters() {{
   }}
 
   // Table
-  const tbody = document.querySelector('#expTable tbody');
+  const tbody = document.querySelector('#' + prefix + '_expTable tbody');
   if (tbody) {{
     tbody.innerHTML = filtered.map(e => {{
       const m = e.meta;
@@ -892,10 +985,31 @@ function applyFilters() {{
         <td><span class="badge ${{bc}}">${{fmtPct(pct)}}</span></td>
         <td>${{hp.lr || '-'}}</td>
         <td>${{hp.ent_coef || '-'}}</td>
+        <td>${{m.reward_fn || hp.reward_fn || '-'}}</td>
         <td>${{fmt(m.train_time_s||0, 0)}}s</td>
       </tr>`;
     }}).join('');
   }}
+}}
+
+function sortScenarioTable(prefix, col) {{
+  const key = prefix + '_sortCol';
+  const keyAsc = prefix + '_sortAsc';
+  if (_scenarioSortState[key] === col) _scenarioSortState[keyAsc] = !_scenarioSortState[keyAsc];
+  else {{ _scenarioSortState[key] = col; _scenarioSortState[keyAsc] = true; }}
+  const asc = _scenarioSortState[keyAsc];
+
+  const tbody = document.querySelector('#' + prefix + '_expTable tbody');
+  if (!tbody) return;
+  const rows = Array.from(tbody.rows);
+  rows.sort((a, b) => {{
+    let va = a.cells[col].textContent.trim().replace(/[^\\d.\\-]/g, '');
+    let vb = b.cells[col].textContent.trim().replace(/[^\\d.\\-]/g, '');
+    const na = parseFloat(va), nb = parseFloat(vb);
+    if (!isNaN(na) && !isNaN(nb)) return asc ? na - nb : nb - na;
+    return asc ? va.localeCompare(vb) : vb.localeCompare(va);
+  }});
+  rows.forEach(r => tbody.appendChild(r));
 }}
 
 function chartOpts(title) {{
@@ -913,7 +1027,7 @@ function chartOpts(title) {{
 }}
 
 // ══════════════════════════════════════════
-// TAB 1: Intersection breakdown
+// TAB 3: Intersection breakdown
 // ══════════════════════════════════════════
 function updateIntersections() {{
   const idx = parseInt(document.getElementById('intExpSelect')?.value || 0);
@@ -1026,7 +1140,7 @@ function updateIntersections() {{
 }}
 
 // ══════════════════════════════════════════
-// TAB 2: Training curves
+// TAB 4: Training curves
 // ══════════════════════════════════════════
 function buildCurveSelector() {{
   const container = document.getElementById('curveSelect');
@@ -1120,7 +1234,7 @@ function updateTrainCharts() {{
 }}
 
 // ══════════════════════════════════════════
-// TAB 3: Hyperparameters
+// TAB 5: Hyperparameters
 // ══════════════════════════════════════════
 function updateHyperparams() {{
   // Steps vs improvement scatter
@@ -1217,7 +1331,7 @@ function updateHyperparams() {{
 }}
 
 // ══════════════════════════════════════════
-// TAB 4: Experiment details
+// TAB 6: Experiment details
 // ══════════════════════════════════════════
 function updateDetails() {{
   const idx = parseInt(document.getElementById('detailExpSelect')?.value || 0);
@@ -1289,80 +1403,88 @@ function updateExplanations() {{
 
   let h = '';
   const runId = exp.meta.run_id;
-  
-  if (!exp.explanations || exp.explanations.length === 0) {{
-    h = '<div class="no-data"><p>Ni podatkov o interpretibilnosti.</p><p style="font-size:13px;margin-top:8px">Zazenite: <code>python src/collect_states.py --model_path results/experiments/' + runId + '/ppo_shared_policy.zip</code></p></div>';
-  }} else {{
-    h += '<div class="grid-2">';
-    
-    // Group images by type
-    const shaps = exp.explanations.filter(f => f.startsWith('shap_'));
-    const trees = exp.explanations.filter(f => f.startsWith('tree_'));
-    const umaps = exp.explanations.filter(f => f.startsWith('umap_'));
-    
-    if (umaps.length > 0) {{
-        h += '<div class="card"><div class="card-title">Latentni prostor (t-SNE / UMAP)</div>';
-        umaps.forEach(f => {{
-            const label = f.includes('actions') ? 'Po akcijah' : 'Po casu dneva';
-            h += `<div style="margin-bottom:15px; text-align:center;">
-                    <img src="experiments/${{runId}}/explanations/${{f}}" style="max-width:100%; border-radius:4px; border:1px solid #334155;">
-                    <div class="info-text">${{label}}</div>
-                  </div>`;
-        }});
-        h += '</div>';
-    }}
-    
-    if (shaps.length > 0) {{
-        h += '<div class="card"><div class="card-title">Pomembnost parametrov (SHAP)</div>';
-        shaps.forEach(f => {{
-            const name = f.replace('shap_', '').replace('.png', '');
-            h += `<div style="margin-bottom:15px; text-align:center;">
-                    <img src="experiments/${{runId}}/explanations/${{f}}" style="max-width:100%; border-radius:4px; border:1px solid #334155;">
-                    <div class="info-text">Krizisce: ${{name}}</div>
-                  </div>`;
-        }});
-        h += '</div>';
-    }}
+  const expl = exp.explanations || {{}};
+  const cats = Object.keys(expl);
 
-    if (trees.length > 0) {{
-        h += '<div class="card" style="grid-column: span 2;"><div class="card-title">Logicna pravila (Decision Tree)</div>';
-        trees.forEach(f => {{
-            const name = f.replace('tree_', '').replace('.png', '');
-            h += `<div style="margin-bottom:15px; text-align:center;">
-                    <img src="experiments/${{runId}}/explanations/${{f}}" style="max-width:100%; border-radius:4px; border:1px solid #334155;">
-                    <div class="info-text">Odlocitveni algoritem: ${{name}}</div>
-                  </div>`;
-        }});
-        h += '</div>';
+  if (cats.length === 0) {{
+    h = '<div class="no-data"><p>Ni podatkov o interpretibilnosti za ta eksperiment.</p><p style="font-size:13px;margin-top:8px">Zazenite: <code>python src/collect_states.py --model_path results/experiments/' + runId + '/ppo_shared_policy.zip</code><br>Nato: <code>python src/explain.py --data_path results/experiments/' + runId + '/harvested_data.pkl</code></p></div>';
+  }} else {{
+    // Category display config: title, grid style, image label generator
+    const catConfig = {{
+      'decision-trees': {{
+        title: 'Odlocitvena drevesa (Decision Trees)',
+        gridStyle: 'grid-column: span 2;',
+        label: f => f.replace('.png','').replace('.jpg',''),
+      }},
+      'shap': {{
+        title: 'Pomembnost znacilk (SHAP)',
+        gridStyle: '',
+        label: f => f.replace('.png','').replace('.jpg',''),
+      }},
+      'umap': {{
+        title: 'Latentni prostor — UMAP projekcije',
+        gridStyle: '',
+        label: f => {{
+          const n = f.replace('.png','').replace('.jpg','');
+          if (n.includes('actions')) return n.includes('pca') ? 'PCA + UMAP: po akcijah' : 'UMAP: po akcijah';
+          if (n.includes('intersections')) return n.includes('pca') ? 'PCA + UMAP: po kriziscih' : 'UMAP: po kriziscih';
+          if (n.includes('time')) return n.includes('pca') ? 'PCA + UMAP: po casu dneva' : 'UMAP: po casu dneva';
+          return n;
+        }},
+      }},
+      't-sne': {{
+        title: 'Latentni prostor — t-SNE projekcije',
+        gridStyle: '',
+        label: f => {{
+          const n = f.replace('.png','').replace('.jpg','');
+          if (n.includes('actions')) return n.includes('pca') ? 'PCA + t-SNE: po akcijah' : 't-SNE: po akcijah';
+          if (n.includes('intersections')) return n.includes('pca') ? 'PCA + t-SNE: po kriziscih' : 't-SNE: po kriziscih';
+          if (n.includes('time')) return n.includes('pca') ? 'PCA + t-SNE: po casu dneva' : 't-SNE: po casu dneva';
+          return n;
+        }},
+      }},
+    }};
+
+    // Display order: decision-trees first (full-width), then shap, umap, t-sne
+    const order = ['decision-trees', 'shap', 'umap', 't-sne'];
+    // Add any extra categories not in predefined order
+    cats.filter(c => !order.includes(c) && c !== '_flat').forEach(c => order.push(c));
+
+    order.forEach(cat => {{
+      if (!expl[cat] || !expl[cat].images || expl[cat].images.length === 0) return;
+      const cfg = catConfig[cat] || {{ title: cat, gridStyle: '', label: f => f.replace('.png','') }};
+      const imgs = expl[cat].images;
+
+      h += `<div class="card" style="${{cfg.gridStyle}}"><div class="card-title">${{cfg.title}} (${{imgs.length}})</div>`;
+      h += '<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap:12px;">';
+      imgs.forEach(f => {{
+        const label = cfg.label(f);
+        h += `<div style="text-align:center;">
+                <img src="experiments/${{runId}}/explanations/${{cat}}/${{f}}" style="max-width:100%; border-radius:4px; border:1px solid #334155;" loading="lazy">
+                <div class="info-text" style="margin-top:4px">${{label}}</div>
+              </div>`;
+      }});
+      h += '</div></div>';
+    }});
+
+    // Legacy flat files (if any)
+    if (expl['_flat'] && expl['_flat'].images.length > 0) {{
+      h += '<div class="card" style="grid-column: span 2;"><div class="card-title">Vizualizacije</div>';
+      expl['_flat'].images.forEach(f => {{
+        h += `<div style="margin-bottom:15px; text-align:center;">
+                <img src="experiments/${{runId}}/explanations/${{f}}" style="max-width:100%; border-radius:4px; border:1px solid #334155;" loading="lazy">
+                <div class="info-text">${{f.replace('.png','')}}</div>
+              </div>`;
+      }});
+      h += '</div>';
     }}
-    
-    h += '</div>';
   }}
 
   document.getElementById('explPanel').innerHTML = h;
 }}
 
-// ── Table sorting ──
-var sortCol = -1, sortAsc = true;
-function sortTable(col) {{
-  if (sortCol === col) sortAsc = !sortAsc;
-  else {{ sortCol = col; sortAsc = true; }}
-
-  const tbody = document.querySelector('#expTable tbody');
-  if (!tbody) return;
-  const rows = Array.from(tbody.rows);
-  rows.sort((a, b) => {{
-    let va = a.cells[col].textContent.trim().replace(/[^\\d.\\-]/g, '');
-    let vb = b.cells[col].textContent.trim().replace(/[^\\d.\\-]/g, '');
-    const na = parseFloat(va), nb = parseFloat(vb);
-    if (!isNaN(na) && !isNaN(nb)) return sortAsc ? na - nb : nb - na;
-    return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
-  }});
-  rows.forEach(r => tbody.appendChild(r));
-}}
-
 // ══════════════════════════════════════════
-// TAB 5: Mega-politike
+// TAB 2: Mega-politike
 // ══════════════════════════════════════════
 
 // Error bar plugin for Chart.js
@@ -1475,7 +1597,7 @@ function updateMegaOverall() {{
                 const tag = items[0].label;
                 const c = comps.find(x => x.tag === tag);
                 if (!c) return '';
-                return `Welch p=${{c.welch_p < 0.0001 ? c.welch_p.toExponential(2) : c.welch_p.toFixed(4)}}\\nCohen d=${{c.cohens_d.toFixed(3)}}`;
+                return `Parni t-test p=${{c.paired_t_p < 0.0001 ? c.paired_t_p.toExponential(2) : c.paired_t_p.toFixed(4)}}\\nCohen d=${{c.cohens_d.toFixed(3)}}`;
               }}
             }}
           }}
@@ -1675,17 +1797,17 @@ function updateMegaDetail() {{
   h += '<div class="card"><div class="card-title">Primerjava po kriziscih</div>';
   h += '<div class="table-wrap"><table><thead><tr>';
   h += '<th>Krizisce</th><th>Bazna (povp.)</th><th>Mega (povp.)</th><th>Izboljsanje</th>';
-  h += '<th>Welch p</th><th>M-W p</th><th>Cohen d</th>';
+  h += '<th>Parni p</th><th>Wilcoxon p</th><th>Cohen d</th>';
   h += '</tr></thead><tbody>';
   const blCond = megaData.conditions.find(c => c.is_baseline);
   megaData.intersection_names.forEach(iname => {{
     const ic = comp.intersections[iname];
     const blR = blCond ? blCond.intersections[iname].reward.mean : 0;
     const mR = cond.intersections[iname].reward.mean;
-    const pB = ic.welch_p < 0.001 ? 'badge-green' : ic.welch_p < 0.01 ? 'badge-green' : ic.welch_p < 0.05 ? 'badge-yellow' : 'badge-gray';
-    const pL = ic.welch_p < 0.001 ? '***' : ic.welch_p < 0.01 ? '**' : ic.welch_p < 0.05 ? '*' : 'n.s.';
-    const mwB = ic.mann_whitney_p < 0.001 ? 'badge-green' : ic.mann_whitney_p < 0.01 ? 'badge-green' : ic.mann_whitney_p < 0.05 ? 'badge-yellow' : 'badge-gray';
-    const mwL = ic.mann_whitney_p < 0.001 ? '***' : ic.mann_whitney_p < 0.01 ? '**' : ic.mann_whitney_p < 0.05 ? '*' : 'n.s.';
+    const pB = ic.paired_t_p < 0.001 ? 'badge-green' : ic.paired_t_p < 0.01 ? 'badge-green' : ic.paired_t_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+    const pL = ic.paired_t_p < 0.001 ? '***' : ic.paired_t_p < 0.01 ? '**' : ic.paired_t_p < 0.05 ? '*' : 'n.s.';
+    const wB = ic.wilcoxon_p < 0.001 ? 'badge-green' : ic.wilcoxon_p < 0.01 ? 'badge-green' : ic.wilcoxon_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+    const wL = ic.wilcoxon_p < 0.001 ? '***' : ic.wilcoxon_p < 0.01 ? '**' : ic.wilcoxon_p < 0.05 ? '*' : 'n.s.';
     const absD = Math.abs(ic.cohens_d);
     const dL = absD > 0.8 ? 'Velik' : absD > 0.5 ? 'Srednji' : absD > 0.2 ? 'Majhen' : 'Zanem.';
     const dB = absD > 0.8 ? (ic.cohens_d > 0 ? 'badge-green' : 'badge-red') : absD > 0.5 ? 'badge-yellow' : 'badge-gray';
@@ -1694,8 +1816,8 @@ function updateMegaDetail() {{
       <td>${{fmt(blR, 0)}}</td>
       <td>${{fmt(mR, 0)}}</td>
       <td><span class="badge ${{badgeClass(ic.improvement_pct)}}">${{fmtPct(ic.improvement_pct)}}</span></td>
-      <td><span class="badge ${{pB}}">${{ic.welch_p < 0.0001 ? ic.welch_p.toExponential(2) : ic.welch_p.toFixed(4)}} ${{pL}}</span></td>
-      <td><span class="badge ${{mwB}}">${{ic.mann_whitney_p < 0.0001 ? ic.mann_whitney_p.toExponential(2) : ic.mann_whitney_p.toFixed(4)}} ${{mwL}}</span></td>
+      <td><span class="badge ${{pB}}">${{ic.paired_t_p < 0.0001 ? ic.paired_t_p.toExponential(2) : ic.paired_t_p.toFixed(4)}} ${{pL}}</span></td>
+      <td><span class="badge ${{wB}}">${{ic.wilcoxon_p < 0.0001 ? ic.wilcoxon_p.toExponential(2) : ic.wilcoxon_p.toFixed(4)}} ${{wL}}</span></td>
       <td><span class="badge ${{dB}}">${{ic.cohens_d.toFixed(3)}} (${{dL}})</span></td>
     </tr>`;
   }});
@@ -1705,17 +1827,17 @@ function updateMegaDetail() {{
   h += '<div class="card"><div class="card-title">Primerjava po casovnih oknih</div>';
   h += '<div class="table-wrap"><table><thead><tr>';
   h += '<th>Casovno okno</th><th>Bazna (povp.)</th><th>Mega (povp.)</th><th>Izboljsanje</th>';
-  h += '<th>Welch p</th><th>M-W p</th><th>Cohen d</th>';
+  h += '<th>Parni p</th><th>Wilcoxon p</th><th>Cohen d</th>';
   h += '</tr></thead><tbody>';
   megaData.window_names.forEach(wname => {{
     const wc = comp.windows[wname];
     const blR = blCond ? blCond.windows[wname].reward.mean : 0;
     const mR = cond.windows[wname].reward.mean;
     const wLabel = megaData.window_labels[wname] || wname;
-    const pB = wc.welch_p < 0.001 ? 'badge-green' : wc.welch_p < 0.01 ? 'badge-green' : wc.welch_p < 0.05 ? 'badge-yellow' : 'badge-gray';
-    const pL = wc.welch_p < 0.001 ? '***' : wc.welch_p < 0.01 ? '**' : wc.welch_p < 0.05 ? '*' : 'n.s.';
-    const mwB = wc.mann_whitney_p < 0.001 ? 'badge-green' : wc.mann_whitney_p < 0.01 ? 'badge-green' : wc.mann_whitney_p < 0.05 ? 'badge-yellow' : 'badge-gray';
-    const mwL = wc.mann_whitney_p < 0.001 ? '***' : wc.mann_whitney_p < 0.01 ? '**' : wc.mann_whitney_p < 0.05 ? '*' : 'n.s.';
+    const pB = wc.paired_t_p < 0.001 ? 'badge-green' : wc.paired_t_p < 0.01 ? 'badge-green' : wc.paired_t_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+    const pL = wc.paired_t_p < 0.001 ? '***' : wc.paired_t_p < 0.01 ? '**' : wc.paired_t_p < 0.05 ? '*' : 'n.s.';
+    const wB = wc.wilcoxon_p < 0.001 ? 'badge-green' : wc.wilcoxon_p < 0.01 ? 'badge-green' : wc.wilcoxon_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+    const wL = wc.wilcoxon_p < 0.001 ? '***' : wc.wilcoxon_p < 0.01 ? '**' : wc.wilcoxon_p < 0.05 ? '*' : 'n.s.';
     const absD = Math.abs(wc.cohens_d);
     const dL = absD > 0.8 ? 'Velik' : absD > 0.5 ? 'Srednji' : absD > 0.2 ? 'Majhen' : 'Zanem.';
     const dB = absD > 0.8 ? (wc.cohens_d > 0 ? 'badge-green' : 'badge-red') : absD > 0.5 ? 'badge-yellow' : 'badge-gray';
@@ -1726,8 +1848,8 @@ function updateMegaDetail() {{
       <td>${{fmt(blR, 0)}}</td>
       <td>${{fmt(mR, 0)}}</td>
       <td><span class="badge ${{badgeClass(wc.improvement_pct)}}">${{fmtPct(wc.improvement_pct)}}</span></td>
-      <td><span class="badge ${{pB}}">${{wc.welch_p < 0.0001 ? wc.welch_p.toExponential(2) : wc.welch_p.toFixed(4)}} ${{pL}}</span></td>
-      <td><span class="badge ${{mwB}}">${{wc.mann_whitney_p < 0.0001 ? wc.mann_whitney_p.toExponential(2) : wc.mann_whitney_p.toFixed(4)}} ${{mwL}}</span></td>
+      <td><span class="badge ${{pB}}">${{wc.paired_t_p < 0.0001 ? wc.paired_t_p.toExponential(2) : wc.paired_t_p.toFixed(4)}} ${{pL}}</span></td>
+      <td><span class="badge ${{wB}}">${{wc.wilcoxon_p < 0.0001 ? wc.wilcoxon_p.toExponential(2) : wc.wilcoxon_p.toFixed(4)}} ${{wL}}</span></td>
       <td><span class="badge ${{dB}}">${{wc.cohens_d.toFixed(3)}} (${{dL}})</span></td>
     </tr>`;
   }});

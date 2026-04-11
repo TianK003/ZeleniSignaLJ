@@ -83,7 +83,8 @@ netconvert --osm-files data/osm/bleiweisova.osm \
     2. **SHAP beeswarm plots** — `TreeExplainer` on the surrogate tree, with class names mapped to approach direction labels. Feature names shortened to Slovenian (e.g. "Vrsta pas 2", "Gostota pas 0", "sin(čas)").
     3. **UMAP projections** — 64-dim latent activations projected to 2D, colored by action, time-of-day, and intersection. Axes hidden (dimensions are abstract — no physical meaning). **How to interpret:** closer points = similar internal PPO representations = similar traffic situations. Distinct color clusters = model learned to separate those conditions internally. Mixed colors = model doesn't differentiate along that dimension. Action plot shows if decisions form distinct clusters; time plot shows if model distinguishes rush-hour vs off-peak; intersection plot shows if shared policy differentiates between locations.
   - Observations are zero-padded to max obs size across all 5 intersections; `explain.py` trims each intersection's matrix to its actual feature count before fitting.
-  - Output files use descriptive names: `kolodvor-decision-tree.png`, `trzaska-shap.png`, `umap-actions.png`, etc.
+  - Output directory structure: `explanations/{category}/{intersection_or_method}.{png,json}`. Categories: `decision-trees/` (5 per-intersection), `shap/` (5 per-intersection), `umap/` (6: 3 colorings x with/without PCA), `t-sne/` (6: same). Each image has a companion JSON with metadata (fidelity, feature importance, embedding coords, etc.).
+  - Example: `explanations/decision-trees/kolodvor.png`, `explanations/shap/trzaska.png`, `explanations/umap/umap-actions.png`, `explanations/t-sne/pca-tsne-time.png`.
 - **Phase-based control**: agents select from predefined valid phase combinations (not individual lights)
 - **Queue-length penalty** as primary reward function: `R(t) = -sum(halted_vehicles)`
 - **Baseline**: `fixed_ts=True` in SumoEnvironment — runs real OSM signal programs untouched
@@ -298,13 +299,24 @@ After the HPC sweep (24 configurations x 200 episodes each on 128 CPUs), the top
 
 ## Statistical Testing (24h Simulations)
 
-To validate mega-policies with statistical rigor, we run **100 replications** of each mega-policy (+ baseline) on full 24h simulations with different SUMO seeds.
+To validate mega-policies with statistical rigor, we run **50 replications** of each mega-policy (+ baseline) on full 24h simulations using a **matched-pairs design** with per-seed random route files.
 
-**Design:**
+**Design (matched-pairs):**
 - 10 conditions: 9 mega-policies + 1 baseline (all fixed-time)
-- 100 runs per condition, each with a unique SUMO seed (1-100)
-- Same route file for all runs (`data/routes/routes_full_day.rou.xml`) — isolates control strategy effect from demand variability
+- 50 runs per condition, each with a unique SUMO seed (1-50)
+- **Per-seed route files**: each seed N uses `routes_full_day_seed_{N-1:02d}.rou.xml` — generated with a different `master_seed` in `randomTrips.py`, giving different OD pairs while preserving the same bimodal demand curve
+- Same route file for all 10 conditions at each seed → fair paired comparison
+- Different route files across seeds → meaningful variance in traffic patterns
 - Full 24h bimodal demand with directional asymmetry (70/30 morning inbound, 70/30 evening outbound)
+- **Statistical tests**: paired t-test (`ttest_rel`) and Wilcoxon signed-rank on per-seed differences, plus Cohen's d for effect size
+
+**Why matched-pairs?** Previous approach used a single deterministic route file for all runs — SUMO seeds only vary microsimulation noise (gap acceptance, speed jitter), not OD patterns. With `model.predict(deterministic=True)`, this produced near-zero variance. The matched-pairs design with per-seed routes gives real variance while controlling for traffic pattern (same route for baseline and megapolicy at each seed).
+
+**Two-phase HPC pipeline:**
+1. `gen_routes.slurm` — generates 50 route files via `generate_demand.py --statistical_routes 50`
+2. `mega_*.slurm` — each runs 50 replications using `--route_dir data/routes/statistical-test`
+
+**Baseline uses `fixed_ts=False`**: Both baseline and megapolicy use `fixed_ts=False` with manual program restoration via `_restore_all_programs()`. This ensures identical sumo-rl code paths — the only difference is whether RL activates during rush hours. (Previous baseline used `fixed_ts=True` which takes a different path through sumo-rl's `step()` function.)
 
 **Dynamic RL/Fixed-Time Switching** (`src/run_24h.py`):
 The 24h simulation runs a single continuous SUMO environment for 86400 seconds. At each step, the script checks the simulation hour and switches target TLS between RL control and fixed-time control:
@@ -323,48 +335,57 @@ The 24h simulation runs a single continuous SUMO environment for 86400 seconds. 
 - Per-time-window breakdown (night, morning rush, shoulder day, evening rush, shoulder evening)
 - Total teleports, vehicles departed/arrived
 
-**Statistical Analysis:** From 100 runs: mean, median, std, 95% CI, Welch's t-test vs baseline, Mann-Whitney U, Cohen's d.
+**Statistical Analysis:** From 50 paired runs: mean, median, std, 95% CI, paired t-test vs baseline, Wilcoxon signed-rank, Cohen's d (paired).
 
-**New Files:**
+**Files:**
 - `src/run_24h.py` — 24h simulation runner with dynamic switching + multiprocessing
-- `src/generate_demand.py --scenario full_day` — generates 24h routes with directional asymmetry
-- `hpc/statistical-test/generate_mega_jobs.py` — generates 10 SLURM scripts (100 runs, 64 workers each)
-- `hpc/statistical-test/submit_all.sh` — submits all jobs
+- `src/generate_demand.py --statistical_routes 50` — generates 50 per-seed route files
+- `src/generate_demand.py --scenario full_day` — generates single 24h route file
+- `hpc/statistical-test/generate_mega_jobs.py` — generates 11 SLURM scripts (1 route gen + 10 simulation jobs, 50 runs each)
+- `hpc/statistical-test/gen_routes.slurm` — route generation job (phase 1)
+- `hpc/statistical-test/submit_all.sh` — submits all jobs with SLURM dependency chain
 - `hpc/statistical-test/mega_*.slurm` — 9 mega + 1 baseline SLURM scripts
 
 **Commands:**
 ```bash
-# Generate 24h route file (once)
-python src/generate_demand.py --scenario full_day
+# Generate 50 per-seed route files for statistical testing
+python src/generate_demand.py --statistical_routes 50
 
-# Generate SLURM scripts
+# Generate SLURM scripts (route gen + simulation jobs)
 python hpc/statistical-test/generate_mega_jobs.py
 
-# Submit all statistical tests to HPC
+# Submit all (auto-generates routes first, then simulations)
 bash hpc/statistical-test/submit_all.sh
 
+# Or skip route gen if routes already exist
+bash hpc/statistical-test/submit_all.sh --skip-routes
+
 # Local smoke test
-python src/run_24h.py --baseline --num_runs 1 --num_workers 1 --output_dir /tmp/test_baseline
+python src/run_24h.py --baseline --num_runs 2 --num_workers 1 \
+    --route_dir data/routes/statistical-test --output_dir /tmp/test_baseline
 
 # Results: results/statistical-test/{M1E1,...,M3E3,baseline}/summary.csv
 ```
 
-**Estimated HPC Time:** ~30-60 min per job (100 runs with 64 parallel workers on 64 CPUs), 8h wall time requested.
+**Estimated HPC Time:** Route generation ~100 min (sequential, 50 files). Simulation ~30-60 min per job (50 runs with 50 parallel workers on 64 CPUs), 8h wall time requested.
 
-## Dashboard — Mega-politike Tab
+## Dashboard
 
-`src/dashboard.py` generates `results/dashboard.html` with 6 tabs. The 6th tab ("Mega-politike") is dedicated to visualizing statistical test results from `results/statistical-test/`.
+`src/dashboard.py` generates `results/dashboard.html` with 8 tabs. The first 3 tabs provide scenario-specific views.
 
-**Data loading:** `load_megapolicy_results()` reads all 10 `summary.csv` files, computes descriptive statistics (mean, median, std, 95% CI via t-distribution) per condition, and runs Welch's t-test, Mann-Whitney U, and Cohen's d for each megapolicy vs baseline. All stats are computed in Python (numpy/scipy) and embedded as JSON in the HTML.
+**Tab structure:**
+1. **Jutranja konica (Morning Rush)** — comparison table + charts filtered to morning rush experiments only
+2. **Vecerna konica (Evening Rush)** — comparison table + charts filtered to evening rush experiments only
+3. **Mega-politike** — 24h statistical test results from `results/statistical-test/`
+4. **Krizisca** — per-intersection breakdown across all experiments
+5. **Ucenje** — training curves
+6. **Hiperparametri** — hyperparameter comparison
+7. **Podrobnosti** — experiment detail viewer
+8. **Interpretibilnost** — SHAP beeswarm, decision tree, UMAP visualizations
 
-**Tab sections:**
-1. **KPI cards** — condition count, best/worst megapolicy, replications, baseline mean, significance count
-2. **Overall comparison** — bar chart with 95% CI error bars (custom Chart.js plugin) + horizontal improvement % chart
-3. **3x3 Heatmap** — morning model (M1-M3) x evening model (E1-E3) matrix, color-coded by improvement %, with significance stars (`*/**/***` for p<0.05/0.01/0.001)
-4. **Per-intersection breakdown** — grouped bar charts for reward and improvement % across 5 intersections (multi-select dropdown)
-5. **Per-time-window breakdown** — grouped bar charts for 6 time windows (night, morning rush, shoulder day, evening rush, shoulder evening, late night)
-6. **Statistical significance table** — full stats with p-value badges, Cohen's d interpretation (Velik/Srednji/Majhen/Zanemarljiv)
-7. **Per-megapolicy drill-down** — per-intersection and per-window stats for a selected megapolicy
+**Mega-politike tab (paired statistics):**
+- `load_megapolicy_results()` reads all 10 `summary.csv` files, aligns data by seed using `pd.merge(..., on="seed")`, computes descriptive statistics (mean, median, std, 95% CI via t-distribution) per condition, and runs **paired t-test** (`ttest_rel`), **Wilcoxon signed-rank**, and **paired Cohen's d** for each megapolicy vs baseline
+- Tab sections: KPI cards, overall comparison bar chart with CI error bars, 3x3 heatmap with significance stars, per-intersection breakdown, per-time-window breakdown, full statistical significance table, per-megapolicy drill-down
 
 **Chart.js error bars:** Implemented via a custom inline plugin (`errorBarPlugin`) that draws CI whisker lines on bar charts. No external dependency needed.
 

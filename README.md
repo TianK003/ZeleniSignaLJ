@@ -481,7 +481,7 @@ zeleni-signalj/
 │   ├── collect_states.py      # Zbiranje stanj in latentnih aktivacij iz naučenega modela
 │   ├── explain.py             # Razložljivost: SHAP, odločitvena drevesa, UMAP
 │   ├── analyze_sim.py         # Analiza SUMO izhoda (teleporti, pretoki)
-│   └── dashboard.py           # HTML nadzorna plosca (6 zavihkov vkljucno z mega-politikami)
+│   └── dashboard.py           # HTML nadzorna plosca (8 zavihkov: scenariji, mega-politike, razlozljivost)
 ├── hpc/
 │   ├── common.sh             # Skupna HPC nastavitev (venv, SUMO_HOME)
 │   ├── traffic_rl.def        # Apptainer definicija vsebnika
@@ -490,20 +490,21 @@ zeleni-signalj/
 │   │   ├── submit_all.sh     # Oddaja vseh sweep opravil
 │   │   └── *.slurm           # Posamezne sweep skripte
 │   └── statistical-test/     # 24h statisticno testiranje mega-politik
-│       ├── generate_mega_jobs.py  # Generator 10 SLURM skript (100 ponovitev)
-│       ├── submit_all.sh          # Oddaja vseh mega-testov
-│       └── mega_*.slurm           # 9 mega-politik + 1 bazna linija
+│       ├── generate_mega_jobs.py  # Generator 11 SLURM skript (50 ponovitev + generiranje poti)
+│       ├── submit_all.sh          # Oddaja z dvofaznim cevovodom (poti → simulacije)
+│       ├── gen_routes.slurm       # Generiranje 50 prometnih poti (faza 1)
+│       └── mega_*.slurm           # 9 mega-politik + 1 bazna linija (faza 2)
 ├── models/               # Shranjeni modeli (kontrolne točke)
 ├── logs/                 # Dnevniki učenja
 └── results/
     ├── experiments/      # Rezultati po eksperimentih (meta.json, results.csv, model)
-    ├── statistical-test/ # Rezultati 24h statisticnih testov (100 ponovitev x 10 pogojev)
-    │   ├── M1E1/         # meta.json + 100x run_seed_*.json + summary.csv
+    ├── statistical-test/ # Rezultati 24h statisticnih testov (50 ponovitev x 10 pogojev)
+    │   ├── M1E1/         # meta.json + 50x run_seed_*.json + summary.csv
     │   ├── ...           # M1E2, M1E3, M2E1, ..., M3E3
     │   └── baseline/     # Bazna linija (sami fiksni casi)
     ├── rush_hour_comparison.csv  # KPI primerjava po scenarijih konicnih ur
     ├── comparison_summary.csv    # KPI po posameznih kriziscih
-    └── dashboard.html    # Interaktivna nadzorna plosca (6 zavihkov)
+    └── dashboard.html    # Interaktivna nadzorna plosca (8 zavihkov)
 ```
 
 ## Tehnologije
@@ -574,13 +575,14 @@ To daje 9 mega-politik: M1E1, M1E2, M1E3, M2E1, M2E2, M2E3, M3E1, M3E2, M3E3.
 
 ## Statisticno testiranje (24h simulacije)
 
-Za statisticno veljavno primerjavo mega-politik z bazno linijo izvajamo **100 neodvisnih ponovitev** vsake mega-politike na polnih 24-urnih simulacijah.
+Za statisticno veljavno primerjavo mega-politik z bazno linijo izvajamo **50 ponovitev** vsake mega-politike na polnih 24-urnih simulacijah z zasnovo **parnih primerjav** (matched-pairs design).
 
-### Zasnova testa
+### Zasnova testa (parni pari)
 
 - **10 pogojev:** 9 mega-politik + 1 bazna linija (sami fiksni casi)
-- **100 ponovitev** na pogoj, vsaka z unikatnim SUMO semenom (1-100)
-- **Iste prometne poti** za vse ponovitve (`routes_full_day.rou.xml`) — izoliramo ucinek strategije krmiljenja od variabilnosti povprasevanja
+- **50 ponovitev** na pogoj, vsaka z unikatnim SUMO semenom (1-50)
+- **Razlicne prometne poti za vsako seme:** `routes_full_day_seed_00.rou.xml` do `seed_49.rou.xml` — generirane z razlicnimi semeni v `randomTrips.py`, kar daje razlicne izvorno-ciljne pare ob ohranjanju istega dvokonicnega prometnega profila
+- **Parno primerjanje:** za vsako seme N vsi pogoji (bazna linija + 9 mega-politik) uporabijo isto datoteko poti — razlike izhajajo izkljucno iz strategije krmiljenja
 - **Polni 24h dvokonicni profil** z usmerjeno asimetrijo (70% vhodni promet zjutraj, 70% izhodni zvecer)
 
 ### Dinamicno preklapljanje RL/fiksni cas (`run_24h.py`)
@@ -606,41 +608,46 @@ Za statisticno veljavno primerjavo mega-politik z bazno linijo izvajamo **100 ne
 - Razdelitev **po casovnem oknu** (noc, jutranja konica, dnevni obok, vecerna konica, vecerni obok)
 - Skupni teleporti, vozila odsla/prispela
 
-### Statisticna analiza
+### Statisticna analiza (parni testi)
 
-Iz 100 ponovitev izracunamo za vsako mega-politiko:
-- **Povprecje, mediana, standardni odklon**
+Iz 50 parnih ponovitev izracunamo za vsako mega-politiko:
+- **Povprecje, mediana, standardni odklon** razlik (mega - bazna)
 - **95% interval zaupanja** (t-porazdelitev)
-- **Welchov t-test** proti bazni liniji (neenake variance)
-- **Mann-Whitney U test** (neparametricni, brez predpostavke o porazdelitvi)
-- **Cohenov d** (velikost ucinka)
+- **Parni t-test** (`ttest_rel`) — primerja istosemenske pare
+- **Wilcoxon test** predznacenih rangov — neparametricni parni test
+- **Cohenov d** za parne podatke: `d = povprecje(razlike) / std(razlike)`
 
-Mega-politika je statisticno znacilno boljsa od bazne linije, ce je p < 0.05 pri obeh testih.
+Parni testi so mocnejsi od neodvisnih, ker eliminirajo varianco prometnih poti (isti promet za bazno linijo in mega-politiko pri vsakem semenu).
 
 ### Zagon
 
 ```bash
-# 1. Generiraj 24h prometno povprasevanje (enkrat)
-python src/generate_demand.py --scenario full_day
+# 1. Generiraj 50 razlicnih prometnih poti (enkrat, ~100 min)
+python src/generate_demand.py --statistical_routes 50
+# -> data/routes/statistical-test/routes_full_day_seed_00..49.rou.xml
 
-# 2. Generiraj SLURM skripte (10 opravil, 100 ponovitev)
+# 2. Generiraj SLURM skripte (1 generiranje poti + 10 simulacij)
 python hpc/statistical-test/generate_mega_jobs.py
 
-# 3. Oddaj vse na HPC
+# 3. Oddaj vse na HPC (najprej generira poti, nato simulacije)
 bash hpc/statistical-test/submit_all.sh
+
+# 3b. Preskocci generiranje poti (ce ze obstajajo)
+bash hpc/statistical-test/submit_all.sh --skip-routes
 
 # 4. Rezultati: results/statistical-test/{M1E1,...,baseline}/summary.csv
 
 # 5. Generiraj nadzorno plosco z zavihkom Mega-politike
-python src/dashboard.py --no-prompt
+python src/dashboard.py
 ```
 
 ### Ocenjen cas na HPC
 
 | Operacija | Cas |
 |-----------|-----|
+| Generiranje 50 prometnih poti | ~100 min |
 | Ena 24h simulacija | ~10-20 min |
-| 100 ponovitev (64 vzporednih delavcev, 64 CPE) | ~30-50 min |
+| 50 ponovitev (50 vzporednih delavcev, 64 CPE) | ~30-50 min |
 | Skupaj na opravilo (z varnostno rezervo) | 8h (zahtevano) |
 | Vseh 10 opravil (vzporedno) | ~1h stenske ure |
 
