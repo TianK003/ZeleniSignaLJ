@@ -12,6 +12,9 @@
 
 source hpc/common.sh
 
+# Flush Python output immediately so SLURM logs are readable in real-time
+export PYTHONUNBUFFERED=1
+
 echo "Generating 50 route files for statistical testing..."
 echo "  Output: data/routes/statistical-test/"
 
