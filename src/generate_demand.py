@@ -24,6 +24,7 @@ import sys
 import shutil
 import numpy as np
 import tempfile
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from demand_math import get_vph
 from config import (
@@ -395,13 +396,15 @@ def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suf
             offpeak_bins.append((b, e, rate))
 
     tmp_dir = tempfile.gettempdir()
+    # Use a unique tag per seed so parallel workers don't collide on temp files.
+    tag = output_suffix if output_suffix else f"ms{master_seed}"
     all_trip_files = []
     total_vehicles = 0
 
     # Morning rush: 70% inbound (fringe=15), 30% outbound (fringe=1)
     if morning_bins:
         print(f"\n  [1/5] Morning rush inbound  (70%, fringe=15)...")
-        f_in = os.path.join(tmp_dir, "fd_morning_in.trips.xml")
+        f_in = os.path.join(tmp_dir, f"fd_morning_in_{tag}.trips.xml")
         total_vehicles += _generate_trips_only(
             _volume_split(morning_bins, 0.70), net_file, f_in,
             fringe_factor=15, seed_offset=0, id_prefix="morn_in_",
@@ -409,7 +412,7 @@ def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suf
         all_trip_files.append(f_in)
 
         print(f"  [2/5] Morning rush outbound (30%, fringe=1)...")
-        f_out = os.path.join(tmp_dir, "fd_morning_out.trips.xml")
+        f_out = os.path.join(tmp_dir, f"fd_morning_out_{tag}.trips.xml")
         total_vehicles += _generate_trips_only(
             _volume_split(morning_bins, 0.30), net_file, f_out,
             fringe_factor=1, seed_offset=1000, id_prefix="morn_out_",
@@ -419,7 +422,7 @@ def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suf
     # Evening rush: 30% inbound (fringe=15), 70% outbound (fringe=1)
     if evening_bins:
         print(f"  [3/5] Evening rush inbound  (30%, fringe=15)...")
-        f_in = os.path.join(tmp_dir, "fd_evening_in.trips.xml")
+        f_in = os.path.join(tmp_dir, f"fd_evening_in_{tag}.trips.xml")
         total_vehicles += _generate_trips_only(
             _volume_split(evening_bins, 0.30), net_file, f_in,
             fringe_factor=15, seed_offset=2000, id_prefix="eve_in_",
@@ -427,7 +430,7 @@ def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suf
         all_trip_files.append(f_in)
 
         print(f"  [4/5] Evening rush outbound (70%, fringe=1)...")
-        f_out = os.path.join(tmp_dir, "fd_evening_out.trips.xml")
+        f_out = os.path.join(tmp_dir, f"fd_evening_out_{tag}.trips.xml")
         total_vehicles += _generate_trips_only(
             _volume_split(evening_bins, 0.70), net_file, f_out,
             fringe_factor=1, seed_offset=3000, id_prefix="eve_out_",
@@ -437,7 +440,7 @@ def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suf
     # Off-peak: 50/50 symmetric (fringe=5)
     if offpeak_bins:
         print(f"  [5/5] Off-peak symmetric    (50/50, fringe=5)...")
-        f_off = os.path.join(tmp_dir, "fd_offpeak.trips.xml")
+        f_off = os.path.join(tmp_dir, f"fd_offpeak_{tag}.trips.xml")
         total_vehicles += _generate_trips_only(
             offpeak_bins, net_file, f_off,
             fringe_factor=5, seed_offset=4000, id_prefix="off_",
@@ -466,7 +469,7 @@ def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suf
             return 0.0
 
     trips.sort(key=_depart)
-    merged_trips = os.path.join(tmp_dir, "fd_merged.trips.xml")
+    merged_trips = os.path.join(tmp_dir, f"fd_merged_{tag}.trips.xml")
     with open(merged_trips, "w") as f:
         f.write("<trips>\n")
         for t in trips:
@@ -570,8 +573,23 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
     return output_routes
 
 
+def _generate_one_statistical_route(args):
+    """Worker function for parallel route generation. Must be module-level for pickling."""
+    net_file, output_dir, seed_idx, master_seed, num_seeds = args
+    suffix = f"seed_{seed_idx:02d}"
+    print(f"\n{'='*60}")
+    print(f"Generating route file {seed_idx+1}/{num_seeds} "
+          f"(master_seed={master_seed}, worker pid={os.getpid()})")
+    path = _generate_full_day_scenario(
+        net_file, output_dir,
+        master_seed=master_seed,
+        output_suffix=suffix,
+    )
+    return seed_idx, path
+
+
 def generate_statistical_routes(net_file, output_dir, num_seeds=50,
-                                master_seed_stride=10000):
+                                master_seed_stride=10000, num_workers=1):
     """Generate N route files with different random seeds for statistical testing.
 
     Each file gets master_seed = seed_index * master_seed_stride, producing
@@ -582,26 +600,36 @@ def generate_statistical_routes(net_file, output_dir, num_seeds=50,
         output_dir: Directory for output (e.g. data/routes/statistical-test/)
         num_seeds: Number of route files to generate (default 50)
         master_seed_stride: Spacing between master seeds (default 10000)
+        num_workers: Number of parallel workers (default 1 = sequential)
 
     Returns:
-        List of generated route file paths.
+        List of generated route file paths (ordered by seed index).
     """
     os.makedirs(output_dir, exist_ok=True)
-    generated = []
+    generated = [None] * num_seeds
 
-    for seed_idx in range(num_seeds):
-        master_seed = seed_idx * master_seed_stride
-        suffix = f"seed_{seed_idx:02d}"
-        print(f"\n{'='*60}")
-        print(f"Generating route file {seed_idx+1}/{num_seeds} "
-              f"(master_seed={master_seed})")
+    work_items = [
+        (net_file, output_dir, seed_idx, seed_idx * master_seed_stride, num_seeds)
+        for seed_idx in range(num_seeds)
+    ]
 
-        path = _generate_full_day_scenario(
-            net_file, output_dir,
-            master_seed=master_seed,
-            output_suffix=suffix,
-        )
-        generated.append(path)
+    effective_workers = min(num_workers, num_seeds)
+    print(f"Generating {num_seeds} route files with {effective_workers} parallel workers...")
+
+    if effective_workers <= 1:
+        for item in work_items:
+            seed_idx, path = _generate_one_statistical_route(item)
+            generated[seed_idx] = path
+    else:
+        with ProcessPoolExecutor(max_workers=effective_workers) as executor:
+            futures = {executor.submit(_generate_one_statistical_route, item): item[2]
+                       for item in work_items}
+            completed = 0
+            for future in as_completed(futures):
+                seed_idx, path = future.result()
+                generated[seed_idx] = path
+                completed += 1
+                print(f"  [{completed}/{num_seeds}] seed_{seed_idx:02d} done -> {path}")
 
     print(f"\n{'='*60}")
     print(f"Generated {len(generated)} route files in {output_dir}/")
@@ -641,6 +669,8 @@ def main():
     # --scenario mode arguments
     parser.add_argument("--output_dir", type=str, default="data/routes",
                         help="Directory for generated route files (scenario mode)")
+    parser.add_argument("--num_workers", type=int, default=1,
+                        help="Parallel workers for --statistical_routes (default 1 = sequential)")
 
     args = parser.parse_args()
 
@@ -648,6 +678,7 @@ def main():
         generate_statistical_routes(
             args.net_file, args.output_dir,
             num_seeds=args.statistical_routes,
+            num_workers=args.num_workers,
         )
         print(f"\nNext steps:")
         print(f"  python src/run_24h.py --route_dir {args.output_dir} --baseline "

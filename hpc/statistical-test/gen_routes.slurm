@@ -15,8 +15,9 @@ source hpc/common.sh
 echo "Generating 50 route files for statistical testing..."
 echo "  Output: data/routes/statistical-test/"
 
-srun python src/generate_demand.py \
+python src/generate_demand.py \
     --statistical_routes 50 \
-    --output_dir data/routes/statistical-test
+    --output_dir data/routes/statistical-test \
+    --num_workers 32
 
 echo "Done. Route files in data/routes/statistical-test/"
