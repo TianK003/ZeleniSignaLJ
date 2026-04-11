@@ -62,8 +62,8 @@ ROUTE_GEN_TEMPLATE = """\
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=32G
 
 source hpc/common.sh
 
@@ -72,7 +72,7 @@ echo "  Output: {route_dir}/"
 
 srun python src/generate_demand.py \\
     --statistical_routes {num_routes} \\
-    --output_dir data/routes
+    --output_dir {route_dir}
 
 echo "Done. Route files in {route_dir}/"
 """

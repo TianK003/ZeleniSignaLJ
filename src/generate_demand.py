@@ -645,13 +645,12 @@ def main():
     args = parser.parse_args()
 
     if args.statistical_routes:
-        stat_dir = os.path.join(args.output_dir, "statistical-test")
         generate_statistical_routes(
-            args.net_file, stat_dir,
+            args.net_file, args.output_dir,
             num_seeds=args.statistical_routes,
         )
         print(f"\nNext steps:")
-        print(f"  python src/run_24h.py --route_dir {stat_dir} --baseline "
+        print(f"  python src/run_24h.py --route_dir {args.output_dir} --baseline "
               f"--num_runs {args.statistical_routes} ...")
         return
 

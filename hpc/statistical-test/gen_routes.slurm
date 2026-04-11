@@ -7,8 +7,8 @@
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=32G
 
 source hpc/common.sh
 
@@ -17,6 +17,6 @@ echo "  Output: data/routes/statistical-test/"
 
 srun python src/generate_demand.py \
     --statistical_routes 50 \
-    --output_dir data/routes
+    --output_dir data/routes/statistical-test
 
 echo "Done. Route files in data/routes/statistical-test/"
