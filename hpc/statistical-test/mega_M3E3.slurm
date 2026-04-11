@@ -16,13 +16,14 @@ source hpc/common.sh
 echo "Starting 24h statistical test: M3E3"
 echo "  Morning model: queue (default), lr=3e-4 (+17.1%)"
 echo "  Evening model: pressure, lr=3e-4, entropy annealing (+12.9%)"
-echo "  Runs: 100 | Workers: 64"
+echo "  Runs: 50 | Workers: 50 | Per-seed routes: yes"
 
 srun python src/run_24h.py \
     --model_morning results/experiments/20260408_235311_morningrush_default_lr3e4_200ep/ppo_shared_policy.zip \
     --model_evening results/experiments/20260408_235311_eveningrush_pressure_lr3e4_entanneal_200ep/ppo_shared_policy.zip \
     \
-    --num_runs 100 \
-    --num_workers 64 \
+    --route_dir data/routes/statistical-test \
+    --num_runs 50 \
+    --num_workers 50 \
     --output_dir results/statistical-test/M3E3 \
     --tag M3E3

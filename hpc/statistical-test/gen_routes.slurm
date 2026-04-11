@@ -1,0 +1,22 @@
+#!/bin/bash
+# Zeleni SignaLJ - Generate 50 route files for statistical testing
+#SBATCH --job-name=zs_gen_routes
+#SBATCH --output=logs/gen_routes_%j.out
+#SBATCH --error=logs/gen_routes_%j.err
+#SBATCH --time=02:00:00
+#SBATCH --partition=all
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+
+source hpc/common.sh
+
+echo "Generating 50 route files for statistical testing..."
+echo "  Output: data/routes/statistical-test/"
+
+srun python src/generate_demand.py \
+    --statistical_routes 50 \
+    --output_dir data/routes
+
+echo "Done. Route files in data/routes/statistical-test/"
