@@ -118,6 +118,13 @@ def _switch_to_fixed_time(env, ts_id, original_programs):
     # alone only updates phase definitions. setProgram re-activates the
     # automatic program so SUMO cycles through phases on its own.
     sumo.trafficlight.setProgram(ts_id, logic.programID)
+    # Restore original offset (for signal coordination)
+    offset = original_programs[ts_id].get("offset", 0)
+    if offset != 0:
+        try:
+            sumo.trafficlight.setParameter(ts_id, "offset", str(offset))
+        except Exception:
+            pass
 
     # Passthrough patch: keeps timing alive but doesn't override SUMO's program
     def passthrough_set_next_phase(new_phase):
@@ -128,6 +135,49 @@ def _switch_to_fixed_time(env, ts_id, original_programs):
 
     ts_obj.set_next_phase = passthrough_set_next_phase
     ts_obj.update = passthrough_update
+
+
+def _restore_all_programs(env, original_programs):
+    """Restore original SUMO programs for ALL TLS (including target).
+
+    Used by the baseline to ensure identical code path as the megapolicy.
+    Patches all TLS with passthrough methods so sumo-rl doesn't interfere.
+    """
+    sumo = env.sumo
+    for ts_id, ts_obj in env.traffic_signals.items():
+        if ts_id not in original_programs:
+            continue
+        prog = original_programs[ts_id]
+        try:
+            phases = [sumo.trafficlight.Phase(p["duration"], p["state"])
+                      for p in prog["phases"]]
+            programs = sumo.trafficlight.getAllProgramLogics(ts_id)
+            logic = programs[0]
+            logic.type = 0
+            logic.phases = phases
+            sumo.trafficlight.setProgramLogic(ts_id, logic)
+            sumo.trafficlight.setProgram(ts_id, logic.programID)
+            offset = prog.get("offset", 0)
+            if offset != 0:
+                try:
+                    sumo.trafficlight.setParameter(ts_id, "offset", str(offset))
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"  WARNING: Could not restore program for {ts_id}: {e}")
+            continue
+
+        # Closure factory to avoid loop-variable capture bug
+        def _make_passthrough(ts_ref, env_ref):
+            def passthrough_set_next_phase(new_phase):
+                ts_ref.next_action_time = env_ref.sim_step + ts_ref.delta_time
+            def passthrough_update():
+                ts_ref.time_since_last_phase_change += 1
+            return passthrough_set_next_phase, passthrough_update
+
+        set_fn, update_fn = _make_passthrough(ts_obj, env)
+        ts_obj.set_next_phase = set_fn
+        ts_obj.update = update_fn
 
 
 def _switch_to_rl(env, ts_id, rl_programs, original_methods):
@@ -161,7 +211,11 @@ def _switch_to_rl(env, ts_id, rl_programs, original_methods):
 # ── 24h simulation episode ────────────────────────────────────────────────
 
 def run_24h_baseline(net_file, route_file, sumo_seed=42):
-    """Run a 24h baseline simulation (all TLS on fixed-time)."""
+    """Run a 24h baseline simulation (all TLS on fixed-time).
+
+    Uses fixed_ts=False with full program restoration to ensure identical
+    code path as the megapolicy. The only difference: RL is never activated.
+    """
     import sumo_rl
 
     env = sumo_rl.SumoEnvironment(
@@ -175,13 +229,16 @@ def run_24h_baseline(net_file, route_file, sumo_seed=42):
         min_green=MIN_GREEN,
         max_green=MAX_GREEN,
         single_agent=False,
-        fixed_ts=True,
+        fixed_ts=False,
         sumo_warnings=False,
         sumo_seed=sumo_seed,
     )
 
     env.reset()
-    target_set = set(TS_IDS)
+
+    # Restore ALL 37 TLS programs (same mechanism as megapolicy)
+    original_programs = parse_original_programs(net_file)
+    _restore_all_programs(env, original_programs)
 
     # Metrics accumulators
     window_metrics = defaultdict(lambda: {
@@ -196,7 +253,9 @@ def run_24h_baseline(net_file, route_file, sumo_seed=42):
         current_hour = env.sim_step / 3600.0
         wlabel = get_window_label(current_hour)
 
-        observations, rewards, dones, info = env.step({})
+        # All TLS are patched — action 0 is ignored by passthrough
+        actions = {ts_id: 0 for ts_id in env.ts_ids}
+        observations, rewards, dones, info = env.step(actions)
         done = dones["__all__"]
 
         # Accumulate rewards
@@ -468,6 +527,7 @@ def _worker(args):
                   "error": str(e)}
 
     result["seed"] = seed
+    result["route_file"] = route_file
     result["wall_time_s"] = round(time.time() - wall_start, 1)
     print(f"  [OK] Seed {seed:>2d} done in {result['wall_time_s']:.0f}s  "
           f"reward={result['total_reward']:.0f}", flush=True)
@@ -582,6 +642,10 @@ def main():
                         default="data/networks/ljubljana.net.xml")
     parser.add_argument("--route_file", type=str,
                         default="data/routes/routes_full_day.rou.xml")
+    parser.add_argument("--route_dir", type=str, default=None,
+                        help="Directory with per-seed route files "
+                             "(routes_full_day_seed_NN.rou.xml). "
+                             "Overrides --route_file.")
     parser.add_argument("--num_runs", type=int, default=50,
                         help="Number of replications (different SUMO seeds)")
     parser.add_argument("--num_workers", type=int, default=10,
@@ -605,7 +669,9 @@ def main():
         "model_morning": args.model_morning,
         "model_evening": args.model_evening,
         "net_file": args.net_file,
-        "route_file": args.route_file,
+        "route_file": args.route_file if not args.route_dir else None,
+        "route_dir": args.route_dir,
+        "per_seed_routes": args.route_dir is not None,
         "num_runs": args.num_runs,
         "num_workers": args.num_workers,
         "num_seconds": FULL_DAY_SECONDS,
@@ -627,19 +693,35 @@ def main():
     print(f"\n{'='*60}")
     print(f"24h Statistical Test: {mode_str}")
     print(f"  Runs: {args.num_runs} | Workers: {args.num_workers}")
-    print(f"  Route: {args.route_file}")
+    if args.route_dir:
+        print(f"  Routes: {args.route_dir}/ (per-seed)")
+    else:
+        print(f"  Route: {args.route_file}")
     if not args.baseline:
         print(f"  Morning model: {args.model_morning}")
         print(f"  Evening model: {args.model_evening}")
     print(f"  Output: {args.output_dir}")
     print(f"{'='*60}")
 
-    # Build worker args
-    worker_args = [
-        (seed, args.net_file, args.route_file,
-         args.model_morning, args.model_evening, args.baseline)
-        for seed in range(1, args.num_runs + 1)
-    ]
+    # Build worker args — resolve per-seed route files if --route_dir is set
+    worker_args = []
+    for seed in range(1, args.num_runs + 1):
+        if args.route_dir:
+            route_idx = seed - 1  # seed 1 -> seed_00, seed 2 -> seed_01, etc.
+            route_file = os.path.join(
+                args.route_dir,
+                f"routes_full_day_seed_{route_idx:02d}.rou.xml")
+            if not os.path.exists(route_file):
+                raise FileNotFoundError(
+                    f"Route file not found: {route_file}\n"
+                    f"Generate with: python src/generate_demand.py "
+                    f"--statistical_routes {args.num_runs}")
+        else:
+            route_file = args.route_file
+        worker_args.append(
+            (seed, args.net_file, route_file,
+             args.model_morning, args.model_evening, args.baseline)
+        )
 
     # Run in parallel
     t0 = time.time()

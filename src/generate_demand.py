@@ -227,7 +227,7 @@ def _volume_split(bins, fraction):
     return [(b, e, r * fraction) for b, e, r in bins]
 
 
-def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offset=0, id_prefix=""):
+def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offset=0, id_prefix="", master_seed=42):
     """
     Run randomTrips.py for each time bin and merge into output_trips.
     Does NOT run duarouter -- call _route_trips() separately.
@@ -251,7 +251,7 @@ def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offse
         period = max(duration / n_vehicles, 0.5)
         total += n_vehicles
 
-        tmp = os.path.join(tmp_dir, f"trips_partial_{seed_offset}_{i}.trips.xml")
+        tmp = os.path.join(tmp_dir, f"trips_partial_{master_seed}_{seed_offset}_{i}.trips.xml")
         all_tmp.append(tmp)
         cmd = [
             sys.executable, random_trips,
@@ -261,8 +261,8 @@ def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offse
             "-e", str(int(end)),
             "-p", str(period),
             "--fringe-factor", str(fringe_factor),
-            "--seed", str(42 + seed_offset + i),
-            "--prefix", f"{id_prefix}{seed_offset}_{i}_",
+            "--seed", str(master_seed + seed_offset + i),
+            "--prefix", f"{id_prefix}{master_seed}_{seed_offset}_{i}_",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
@@ -347,18 +347,29 @@ def _count_trips(trips_file):
     return count
 
 
-def _generate_full_day_scenario(net_file, output_dir):
+def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suffix=""):
     """Generate a full 24h route file with time-varying directional asymmetry.
 
     - 06:00-10:00 morning rush: 70% inbound (fringe=15), 30% outbound (fringe=1)
     - 14:00-18:00 evening rush: 30% inbound (fringe=15), 70% outbound (fringe=1)
     - All other hours: 50/50 symmetric (fringe=5)
+
+    Args:
+        master_seed: Base seed for randomTrips.py. Different values produce
+                     different OD pairs while keeping the same demand curve.
+        output_suffix: If set, appended to output filename (e.g. "seed_00"
+                       -> routes_full_day_seed_00.rou.xml)
     """
     cfg = SCENARIOS["full_day"]
     os.makedirs(output_dir, exist_ok=True)
 
-    output_routes = os.path.join(output_dir, cfg["output"])
-    output_trips = os.path.join(output_dir, cfg["trips"])
+    base_routes = cfg["output"]
+    base_trips = cfg["trips"]
+    if output_suffix:
+        base_routes = base_routes.replace(".rou.xml", f"_{output_suffix}.rou.xml")
+        base_trips = base_trips.replace(".trips.xml", f"_{output_suffix}.trips.xml")
+    output_routes = os.path.join(output_dir, base_routes)
+    output_trips = os.path.join(output_dir, base_trips)
 
     print(f"\n{'='*60}")
     print(f"Scenario: full_day (24h with time-varying directional asymmetry)")
@@ -393,14 +404,16 @@ def _generate_full_day_scenario(net_file, output_dir):
         f_in = os.path.join(tmp_dir, "fd_morning_in.trips.xml")
         total_vehicles += _generate_trips_only(
             _volume_split(morning_bins, 0.70), net_file, f_in,
-            fringe_factor=15, seed_offset=0, id_prefix="morn_in_")
+            fringe_factor=15, seed_offset=0, id_prefix="morn_in_",
+            master_seed=master_seed)
         all_trip_files.append(f_in)
 
         print(f"  [2/5] Morning rush outbound (30%, fringe=1)...")
         f_out = os.path.join(tmp_dir, "fd_morning_out.trips.xml")
         total_vehicles += _generate_trips_only(
             _volume_split(morning_bins, 0.30), net_file, f_out,
-            fringe_factor=1, seed_offset=1000, id_prefix="morn_out_")
+            fringe_factor=1, seed_offset=1000, id_prefix="morn_out_",
+            master_seed=master_seed)
         all_trip_files.append(f_out)
 
     # Evening rush: 30% inbound (fringe=15), 70% outbound (fringe=1)
@@ -409,14 +422,16 @@ def _generate_full_day_scenario(net_file, output_dir):
         f_in = os.path.join(tmp_dir, "fd_evening_in.trips.xml")
         total_vehicles += _generate_trips_only(
             _volume_split(evening_bins, 0.30), net_file, f_in,
-            fringe_factor=15, seed_offset=2000, id_prefix="eve_in_")
+            fringe_factor=15, seed_offset=2000, id_prefix="eve_in_",
+            master_seed=master_seed)
         all_trip_files.append(f_in)
 
         print(f"  [4/5] Evening rush outbound (70%, fringe=1)...")
         f_out = os.path.join(tmp_dir, "fd_evening_out.trips.xml")
         total_vehicles += _generate_trips_only(
             _volume_split(evening_bins, 0.70), net_file, f_out,
-            fringe_factor=1, seed_offset=3000, id_prefix="eve_out_")
+            fringe_factor=1, seed_offset=3000, id_prefix="eve_out_",
+            master_seed=master_seed)
         all_trip_files.append(f_out)
 
     # Off-peak: 50/50 symmetric (fringe=5)
@@ -425,7 +440,8 @@ def _generate_full_day_scenario(net_file, output_dir):
         f_off = os.path.join(tmp_dir, "fd_offpeak.trips.xml")
         total_vehicles += _generate_trips_only(
             offpeak_bins, net_file, f_off,
-            fringe_factor=5, seed_offset=4000, id_prefix="off_")
+            fringe_factor=5, seed_offset=4000, id_prefix="off_",
+            master_seed=master_seed)
         all_trip_files.append(f_off)
 
     # Merge all trip files sorted by departure time
@@ -464,10 +480,12 @@ def _generate_full_day_scenario(net_file, output_dir):
     return output_routes
 
 
-def generate_scenario(scenario_name, net_file, output_dir):
+def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, output_suffix=""):
     """Generate route file for one rush scenario using the bimodal curve."""
     if scenario_name == "full_day":
-        return _generate_full_day_scenario(net_file, output_dir)
+        return _generate_full_day_scenario(net_file, output_dir,
+                                           master_seed=master_seed,
+                                           output_suffix=output_suffix)
 
     cfg = SCENARIOS[scenario_name]
     os.makedirs(output_dir, exist_ok=True)
@@ -552,6 +570,44 @@ def generate_scenario(scenario_name, net_file, output_dir):
     return output_routes
 
 
+def generate_statistical_routes(net_file, output_dir, num_seeds=50,
+                                master_seed_stride=10000):
+    """Generate N route files with different random seeds for statistical testing.
+
+    Each file gets master_seed = seed_index * master_seed_stride, producing
+    completely different OD pairs while preserving the same bimodal demand curve.
+
+    Args:
+        net_file: Path to SUMO .net.xml
+        output_dir: Directory for output (e.g. data/routes/statistical-test/)
+        num_seeds: Number of route files to generate (default 50)
+        master_seed_stride: Spacing between master seeds (default 10000)
+
+    Returns:
+        List of generated route file paths.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    generated = []
+
+    for seed_idx in range(num_seeds):
+        master_seed = seed_idx * master_seed_stride
+        suffix = f"seed_{seed_idx:02d}"
+        print(f"\n{'='*60}")
+        print(f"Generating route file {seed_idx+1}/{num_seeds} "
+              f"(master_seed={master_seed})")
+
+        path = _generate_full_day_scenario(
+            net_file, output_dir,
+            master_seed=master_seed,
+            output_suffix=suffix,
+        )
+        generated.append(path)
+
+    print(f"\n{'='*60}")
+    print(f"Generated {len(generated)} route files in {output_dir}/")
+    return generated
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate traffic demand (uniform or rush-hour scenarios)"
@@ -559,13 +615,16 @@ def main():
     parser.add_argument("--net_file", type=str,
                         default="data/networks/ljubljana.net.xml")
 
-    # Mode selection: --profile OR --scenario (not both)
+    # Mode selection: --profile OR --scenario OR --statistical_routes (not both)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--profile", type=str, choices=["uniform"],
                       help="Demand temporal profile (uniform for smoke tests)")
     mode.add_argument("--scenario", type=str,
                       choices=["morning_rush", "evening_rush", "offpeak", "full_day", "all"],
                       help="Rush-hour scenario using bimodal 24h curve")
+    mode.add_argument("--statistical_routes", type=int, metavar="N",
+                      help="Generate N route files with different seeds for "
+                           "statistical testing (output to output_dir/statistical-test/)")
 
     # --profile mode arguments
     parser.add_argument("--output_trips", type=str,
@@ -584,6 +643,17 @@ def main():
                         help="Directory for generated route files (scenario mode)")
 
     args = parser.parse_args()
+
+    if args.statistical_routes:
+        stat_dir = os.path.join(args.output_dir, "statistical-test")
+        generate_statistical_routes(
+            args.net_file, stat_dir,
+            num_seeds=args.statistical_routes,
+        )
+        print(f"\nNext steps:")
+        print(f"  python src/run_24h.py --route_dir {stat_dir} --baseline "
+              f"--num_runs {args.statistical_routes} ...")
+        return
 
     if args.scenario:
         # Rush-hour scenario mode

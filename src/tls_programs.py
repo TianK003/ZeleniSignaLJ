@@ -113,6 +113,13 @@ def restore_non_target_programs(env, target_agent_ids, original_programs):
             # setProgramLogic() alone only updates phase definitions.
             # setProgram() is required to resume automatic cycling.
             sumo.trafficlight.setProgram(ts_id, logic.programID)
+            # Restore original offset (for signal coordination)
+            offset = prog.get("offset", 0)
+            if offset != 0:
+                try:
+                    sumo.trafficlight.setParameter(ts_id, "offset", str(offset))
+                except Exception:
+                    pass  # offset=0 is common, setParameter may not be available
         except Exception as e:
             print(f"  WARNING: Could not restore program for {ts_id}: {e}")
             continue
