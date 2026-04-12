@@ -1130,8 +1130,11 @@ def main():
     with open(os.path.join(run_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
 
-    # Ensure route file exists
-    if not os.path.exists(args.route_file):
+    # Ensure route file exists (skip check when --route_dir provides the actual files)
+    if route_files:
+        # With --route_dir, use the first route file as the base route for baseline eval
+        args.route_file = route_files[0]
+    elif not os.path.exists(args.route_file):
         if args.scenario in ("morning_rush", "evening_rush", "offpeak"):
             print(f"\n  ERROR: Route file not found: {args.route_file}")
             print(f"  Generate it first:")
