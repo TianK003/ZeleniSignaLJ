@@ -62,14 +62,15 @@ ROUTE_GEN_TEMPLATE = """\
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=64G
 
 source hpc/common.sh
 
 echo "Generating {num_routes} route files for statistical testing..."
 echo "  Output: {route_dir}/"
 
+# --num_workers auto-detects from cpus-per-task (64 -> all {num_routes} in parallel)
 srun python src/generate_demand.py \\
     --statistical_routes {num_routes} \\
     --output_dir {route_dir}
