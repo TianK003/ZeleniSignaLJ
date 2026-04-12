@@ -427,12 +427,9 @@ def make_env_factory(net_file, route_file, num_seconds, route_dir=None):
             import glob as _g
             files = sorted(_g.glob(os.path.join(route_dir, "*.rou.xml")))
             if files:
-                chosen = random.choice(files)
-                # Each subprocess gets its own copy (keyed by PID to avoid collisions)
-                local_route = route_file.replace(".rou.xml", f"_worker{os.getpid()}.rou.xml")
-                import shutil
-                shutil.copy(chosen, local_route)
-                actual_route = local_route
+                # Each subprocess reads a different original file directly (no copy).
+                # Use PID for selection — guarantees diversity even with forked random state.
+                actual_route = files[os.getpid() % len(files)]
 
         env = sumo_rl.parallel_env(
             net_file=net_file,

@@ -3,7 +3,13 @@
 Two-phase pipeline:
   1. gen_train_routes.slurm — generate route variants per scenario
   2. Training scripts — use --route_dir for route-randomized training
+
+Usage:
+  python hpc/sweep/generate_jobs.py                      # defaults: 2400ep, 12h
+  python hpc/sweep/generate_jobs.py --episodes 4800 --timeout 24
+  python hpc/sweep/generate_jobs.py --episodes 800 --timeout 6
 """
+import argparse
 import os
 
 HPC_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -13,7 +19,14 @@ LEARNING_RATES = [3e-3, 1e-3, 3e-4]
 ENT_COEFS = [0.02, 0.05, 0.1]
 SCENARIOS = ["morning_rush", "evening_rush"]
 NUM_CPUS = 16
-EPISODES = 2400
+
+_parser = argparse.ArgumentParser()
+_parser.add_argument("--episodes", type=int, default=2400)
+_parser.add_argument("--timeout", type=int, default=12, help="SLURM timeout in hours")
+_args = _parser.parse_args()
+
+EPISODES = _args.episodes
+TIMEOUT_H = _args.timeout
 NUM_ROUTE_VARIANTS = 50
 
 # Route directories for route-randomized training
@@ -45,7 +58,7 @@ def write_script(filename, job_name, extra_args, tag):
 #SBATCH --job-name={job_name}
 #SBATCH --output=logs/{job_name}_%j.out
 #SBATCH --error=logs/{job_name}_%j.err
-#SBATCH --time=12:00:00
+#SBATCH --time={TIMEOUT_H}:00:00
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
