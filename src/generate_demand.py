@@ -68,7 +68,7 @@ def get_random_trips_path():
     if path_in_path: return path_in_path
     return None
 
-def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=5):
+def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=5, master_seed=42):
     """
     Write trips XML with time-varying demand using randomTrips.py per bin,
     then merge and route.
@@ -114,7 +114,7 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
             "-e", str(int(end)),
             "-p", str(max(period, 0.5)),
             "--fringe-factor", str(fringe_factor),
-            "--seed", str(42 + i),
+            "--seed", str(master_seed + i),
             "--prefix", f"b{i}_",
         ]
 
@@ -484,7 +484,14 @@ def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suf
 
 
 def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, output_suffix=""):
-    """Generate route file for one rush scenario using the bimodal curve."""
+    """Generate route file for one rush scenario using the bimodal curve.
+
+    Args:
+        master_seed: Base seed for randomTrips.py. Different values produce
+                     different OD pairs while keeping the same demand curve.
+        output_suffix: If set, appended to output filename (e.g. "seed_00"
+                       -> routes_morning_rush_seed_00.rou.xml)
+    """
     if scenario_name == "full_day":
         return _generate_full_day_scenario(net_file, output_dir,
                                            master_seed=master_seed,
@@ -493,8 +500,13 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
     cfg = SCENARIOS[scenario_name]
     os.makedirs(output_dir, exist_ok=True)
 
-    output_routes = os.path.join(output_dir, cfg["output"])
-    output_trips = os.path.join(output_dir, cfg["trips"])
+    base_routes = cfg["output"]
+    base_trips = cfg["trips"]
+    if output_suffix:
+        base_routes = base_routes.replace(".rou.xml", f"_{output_suffix}.rou.xml")
+        base_trips = base_trips.replace(".trips.xml", f"_{output_suffix}.trips.xml")
+    output_routes = os.path.join(output_dir, base_routes)
+    output_trips = os.path.join(output_dir, base_trips)
 
     print(f"\n{'='*60}")
     print(f"Scenario: {scenario_name}")
@@ -519,6 +531,9 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
     inbound_frac = cfg["inbound_fraction"]
     outbound_frac = 1.0 - inbound_frac
 
+    # Unique tag for temp files (avoids collisions in parallel generation)
+    tag = output_suffix if output_suffix else f"ms{master_seed}"
+
     if abs(inbound_frac - 0.5) < 0.01:
         # Symmetric: single batch, no need to merge
         total = write_demand_xml(
@@ -527,6 +542,7 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
             output_trips,
             output_routes,
             fringe_factor=cfg["fringe_factor_high"],
+            master_seed=master_seed,
         )
     else:
         # Asymmetric: merge inbound (high-fringe) + outbound (low-fringe) batches
@@ -534,9 +550,9 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
         outbound_bins = _volume_split(full_bins, outbound_frac)
 
         tmp_dir = tempfile.gettempdir()
-        trips_inbound = os.path.join(tmp_dir, f"trips_{scenario_name}_in.trips.xml")
-        trips_outbound = os.path.join(tmp_dir, f"trips_{scenario_name}_out.trips.xml")
-        trips_merged = os.path.join(tmp_dir, f"trips_{scenario_name}_merged.trips.xml")
+        trips_inbound = os.path.join(tmp_dir, f"trips_{scenario_name}_in_{tag}.trips.xml")
+        trips_outbound = os.path.join(tmp_dir, f"trips_{scenario_name}_out_{tag}.trips.xml")
+        trips_merged = os.path.join(tmp_dir, f"trips_{scenario_name}_merged_{tag}.trips.xml")
 
         print(f"\n  [1/3] Generating inbound trips  ({inbound_frac*100:.0f}% volume, "
               f"fringe={cfg['fringe_factor_high']})...")
@@ -545,6 +561,7 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
             fringe_factor=cfg["fringe_factor_high"],
             seed_offset=0,
             id_prefix="in",
+            master_seed=master_seed,
         )
 
         print(f"\n  [2/3] Generating outbound trips ({outbound_frac*100:.0f}% volume, "
@@ -554,6 +571,7 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
             fringe_factor=cfg["fringe_factor_low"],
             seed_offset=1000,
             id_prefix="out",
+            master_seed=master_seed,
         )
 
         # Merge trips and sort by departure time
@@ -571,6 +589,80 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
 
     print(f"\n  Done: {total} vehicles -> {output_routes}")
     return output_routes
+
+
+def _generate_one_scenario_variant(args):
+    """Worker function for parallel scenario variant generation."""
+    scenario_name, net_file, output_dir, seed_idx, master_seed, num_variants = args
+    suffix = f"seed_{seed_idx:02d}"
+    print(f"\n{'='*60}")
+    print(f"Generating {scenario_name} variant {seed_idx+1}/{num_variants} "
+          f"(master_seed={master_seed}, worker pid={os.getpid()})")
+    path = generate_scenario(
+        scenario_name, net_file, output_dir,
+        master_seed=master_seed,
+        output_suffix=suffix,
+    )
+    return seed_idx, path
+
+
+def generate_scenario_variants(scenario_name, net_file, output_dir, num_variants=50,
+                               master_seed_stride=10000, num_workers=1):
+    """Generate N route files with different random seeds for a single scenario.
+
+    Each file gets master_seed = seed_index * master_seed_stride, producing
+    completely different OD pairs while preserving the same demand curve.
+
+    Args:
+        scenario_name: One of "morning_rush", "evening_rush", "offpeak", "full_day"
+        net_file: Path to SUMO .net.xml
+        output_dir: Directory for output route files
+        num_variants: Number of route files to generate
+        master_seed_stride: Spacing between master seeds (default 10000)
+        num_workers: Number of parallel workers (default 1 = sequential)
+
+    Returns:
+        List of generated route file paths (ordered by seed index).
+    """
+    if scenario_name == "full_day":
+        return generate_statistical_routes(
+            net_file, output_dir,
+            num_seeds=num_variants,
+            master_seed_stride=master_seed_stride,
+            num_workers=num_workers,
+        )
+
+    os.makedirs(output_dir, exist_ok=True)
+    generated = [None] * num_variants
+
+    work_items = [
+        (scenario_name, net_file, output_dir, seed_idx,
+         seed_idx * master_seed_stride, num_variants)
+        for seed_idx in range(num_variants)
+    ]
+
+    effective_workers = min(num_workers, num_variants)
+    print(f"Generating {num_variants} {scenario_name} route variants "
+          f"with {effective_workers} parallel workers...")
+
+    if effective_workers <= 1:
+        for item in work_items:
+            seed_idx, path = _generate_one_scenario_variant(item)
+            generated[seed_idx] = path
+    else:
+        with ProcessPoolExecutor(max_workers=effective_workers) as executor:
+            futures = {executor.submit(_generate_one_scenario_variant, item): item[3]
+                       for item in work_items}
+            completed = 0
+            for future in as_completed(futures):
+                seed_idx, path = future.result()
+                generated[seed_idx] = path
+                completed += 1
+                print(f"  [{completed}/{num_variants}] seed_{seed_idx:02d} done -> {path}")
+
+    print(f"\n{'='*60}")
+    print(f"Generated {len(generated)} {scenario_name} route files in {output_dir}/")
+    return generated
 
 
 def _generate_one_statistical_route(args):
@@ -651,8 +743,14 @@ def main():
                       choices=["morning_rush", "evening_rush", "offpeak", "full_day", "all"],
                       help="Rush-hour scenario using bimodal 24h curve")
     mode.add_argument("--statistical_routes", type=int, metavar="N",
-                      help="Generate N route files with different seeds for "
-                           "statistical testing (output to output_dir/statistical-test/)")
+                      help="Generate N full-day route files with different seeds "
+                           "for statistical testing (output to output_dir/)")
+
+    # Variant generation (works with --scenario)
+    parser.add_argument("--num_variants", type=int, default=None, metavar="N",
+                        help="Generate N route files with different random seeds. "
+                             "Requires --scenario. Each variant gets a different "
+                             "master_seed producing different OD pairs.")
 
     # --profile mode arguments
     parser.add_argument("--output_trips", type=str,
@@ -669,10 +767,15 @@ def main():
     # --scenario mode arguments
     parser.add_argument("--output_dir", type=str, default="data/routes",
                         help="Directory for generated route files (scenario mode)")
-    parser.add_argument("--num_workers", type=int, default=1,
-                        help="Parallel workers for --statistical_routes (default 1 = sequential)")
+    parser.add_argument("--num_workers", type=int, default=None,
+                        help="Parallel workers for --statistical_routes / "
+                             "--num_variants (default: auto-detect CPU count)")
 
     args = parser.parse_args()
+
+    # Auto-detect parallel workers from CPU count
+    if args.num_workers is None:
+        args.num_workers = os.cpu_count() or 4
 
     if args.statistical_routes:
         generate_statistical_routes(
@@ -689,13 +792,27 @@ def main():
         # Rush-hour scenario mode
         targets = list(SCENARIOS.keys()) if args.scenario == "all" else [args.scenario]
 
-        for scenario in targets:
-            generate_scenario(scenario, args.net_file, args.output_dir)
+        if args.num_variants:
+            # Generate N route file variants per scenario
+            for scenario in targets:
+                generate_scenario_variants(
+                    scenario, args.net_file, args.output_dir,
+                    num_variants=args.num_variants,
+                    num_workers=args.num_workers,
+                )
+            print(f"\nAll done. Route variants are in {args.output_dir}/")
+            print("Next steps:")
+            for s in targets:
+                print(f"  python src/run_rush_test.py --scenario {s} "
+                      f"--route_dir {args.output_dir} --num_runs {args.num_variants}")
+        else:
+            for scenario in targets:
+                generate_scenario(scenario, args.net_file, args.output_dir)
 
-        print(f"\nAll done. Route files are in {args.output_dir}/")
-        print("Next steps:")
-        for s in targets:
-            print(f"  python src/experiment.py --scenario {s}")
+            print(f"\nAll done. Route files are in {args.output_dir}/")
+            print("Next steps:")
+            for s in targets:
+                print(f"  python src/experiment.py --scenario {s}")
     else:
         # Profile mode (default to uniform if neither given)
         profile = args.profile or "uniform"

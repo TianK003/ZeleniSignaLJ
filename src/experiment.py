@@ -535,24 +535,40 @@ def run_evaluation(net_file, route_file, num_seconds, model):
 
 def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
               max_seconds=None, run_curriculum=False, log_curriculum=False, num_cpus=1, resume_model_path=None,
-              entropy_annealing=False, episodes_per_save=25):
+              entropy_annealing=False, episodes_per_save=25, route_files=None):
     """
     Train PPO with parameter sharing via SuperSuit.
     All traffic signals share one policy (standard IPPO approach).
+
+    Args:
+        route_files: Optional list of route file paths for route randomization.
+                     Each episode picks a random file from this list, copying it
+                     to the training route path so the env picks up new OD pairs.
     Returns the trained model.
     """
-    if run_curriculum:
+    use_route_rotation = route_files and len(route_files) > 1
+
+    if run_curriculum or use_route_rotation:
         train_route_file = route_file.replace(".rou.xml", "_train.rou.xml")
         if train_route_file == route_file:
             train_route_file += "_train.xml"
         tmp_trips = train_route_file.replace(".rou.xml", "_trips.xml")
-        
-        print("  [Setup] Generating initial training demand slice for the environment...")
-        initial_hour = random.uniform(0, 24)
-        initial_vph = get_vph(initial_hour, TOTAL_DAILY_CARS)
-        write_demand_xml([(0, num_seconds, initial_vph/3600.0)], net_file, tmp_trips, train_route_file)
-        
-        print(f"  Creating vectorized training environment with curriculum routes on {num_cpus} CPUs...")
+
+        if use_route_rotation:
+            # Route randomization: copy first route file to seed the env
+            import shutil
+            initial_route = random.choice(route_files)
+            shutil.copy(initial_route, train_route_file)
+            print(f"  [Route randomization] {len(route_files)} route files available")
+            print(f"  Initial route: {os.path.basename(initial_route)}")
+
+        if run_curriculum:
+            print("  [Setup] Generating initial training demand slice for the environment...")
+            initial_hour = random.uniform(0, 24)
+            initial_vph = get_vph(initial_hour, TOTAL_DAILY_CARS)
+            write_demand_xml([(0, num_seconds, initial_vph/3600.0)], net_file, tmp_trips, train_route_file)
+
+        print(f"  Creating vectorized training environment on {num_cpus} CPUs...")
         env = build_vectorized_env(net_file, train_route_file, num_seconds, num_cpus)
     else:
         print(f"  Creating vectorized training environment on {num_cpus} CPUs...")
@@ -635,32 +651,48 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
 
     t_start = time.time()
     
-    if run_curriculum:
-        print("\n  [Curriculum Mode ON] Generating random 1h slices of the day...")
+    if run_curriculum or use_route_rotation:
+        import shutil as _shutil
+        desc_parts = []
+        if run_curriculum:
+            desc_parts.append("Curriculum")
+        if use_route_rotation:
+            desc_parts.append(f"Route randomization ({len(route_files)} files)")
+        print(f"\n  [{' + '.join(desc_parts)}] Per-episode training loop...")
         episodes = total_timesteps // STEPS_PER_EPISODE
         if episodes == 0: episodes = 1
-            
+
         for ep in range(episodes):
             global CURRENT_HOUR, CURRENT_VPH
-            
-            if ep > 0:
-                hour_of_day = random.uniform(0, 24)
-                CURRENT_HOUR = hour_of_day
-                vph = get_vph(hour_of_day, TOTAL_DAILY_CARS)
-                CURRENT_VPH = vph
-                vps = vph / 3600.0
-                
-                print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
-                print(f"     Random Time of day: {hour_of_day:.1f}h, Traffic Flow: {vph:.0f} cars/hour")
-                
-                write_demand_xml([(0, num_seconds, vps)], net_file, tmp_trips, train_route_file)
-            else:
-                CURRENT_HOUR = initial_hour
-                CURRENT_VPH = initial_vph
-                print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
-                print(f"     Random Time of day: {initial_hour:.1f}h, Traffic Flow: {initial_vph:.0f} cars/hour")
-            
-            # Force SB3 to reset the environment state to load the newly generated routes!
+
+            # Route randomization: copy a random route file each episode
+            if use_route_rotation and ep > 0:
+                chosen = random.choice(route_files)
+                _shutil.copy(chosen, train_route_file)
+                if ep % 25 == 0:
+                    print(f"     Route: {os.path.basename(chosen)}")
+
+            if run_curriculum:
+                if ep > 0:
+                    hour_of_day = random.uniform(0, 24)
+                    CURRENT_HOUR = hour_of_day
+                    vph = get_vph(hour_of_day, TOTAL_DAILY_CARS)
+                    CURRENT_VPH = vph
+                    vps = vph / 3600.0
+
+                    print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
+                    print(f"     Random Time of day: {hour_of_day:.1f}h, Traffic Flow: {vph:.0f} cars/hour")
+
+                    write_demand_xml([(0, num_seconds, vps)], net_file, tmp_trips, train_route_file)
+                else:
+                    CURRENT_HOUR = initial_hour
+                    CURRENT_VPH = initial_vph
+                    print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
+                    print(f"     Random Time of day: {initial_hour:.1f}h, Traffic Flow: {initial_vph:.0f} cars/hour")
+            elif use_route_rotation and ep % 25 == 0:
+                print(f"\n  -- Route-Randomized Episode {ep+1}/{episodes} --")
+
+            # Force SB3 to reset the environment state to load new routes
             model._last_obs = None
 
             model.learn(
@@ -668,23 +700,23 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                 callback=callbacks,
                 reset_num_timesteps=False
             )
-            
-            if log_curriculum:
+
+            if log_curriculum and run_curriculum:
                 # We do exact 1-to-1 comparison by running the baseline and deterministic RL
                 # model on the exact same randomized routing file we just generated.
                 import subprocess, json, sys, tempfile
-                
+
                 h_val = hour_of_day if ep > 0 else initial_hour
                 v_val = vph if ep > 0 else initial_vph
-                
+
                 tmp_json = os.path.join(tempfile.gettempdir(), "eval_out.json")
-                
+
                 # 1. Baseline in Subprocess (Safe for Libsumo)
                 subprocess.run([sys.executable, "src/eval_helper.py", "baseline", net_file, train_route_file, str(num_seconds), tmp_json])
                 with open(tmp_json, "r") as f:
                     bl_r = json.load(f)
                 bl_tot = sum(bl_r.values())
-                
+
                 # 2. RL Evaluation in Subprocess (Safe for Libsumo)
                 tmp_model = os.path.join(run_dir, "tmp_eval_model")
                 model.save(tmp_model)
@@ -692,16 +724,16 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                 with open(tmp_json, "r") as f:
                     rl_r = json.load(f)
                 rl_tot = sum(rl_r.values())
-                
+
                 impr = ((rl_tot - bl_tot) / abs(bl_tot) * 100) if bl_tot != 0 else 0
-                
+
                 log_line = f"Ep {ep+1:03d} | Hour {h_val:04.1f}h | Traffic {v_val:4.0f} vph | Baseline: {bl_tot:7.1f} | RL: {rl_tot:7.1f} | Impr: {impr:+5.1f}%"
                 print(f"     [LOG] {log_line}")
                 with open(os.path.join(run_dir, "curriculum_progress.txt"), "a", encoding="utf-8") as f:
                     f.write(log_line + "\n")
-            
+
             if max_seconds and (time.time() - t_start) >= max_seconds:
-                print("  Time limit reached during curriculum learning.")
+                print("  Time limit reached during per-episode training.")
                 break
     else:
         model.learn(
@@ -827,6 +859,12 @@ def main():
                         help="Demand scenario. Sets route_file, num_seconds, and "
                              "CURRENT_HOUR from the scenario preset. "
                              "Use --route_file to override.")
+    parser.add_argument("--route_dir", type=str, default=None,
+                        help="Directory with multiple route files (*.rou.xml). "
+                             "Each episode uses a random route file from this "
+                             "directory for route-randomized training. "
+                             "Generate with: python src/generate_demand.py "
+                             "--scenario X --num_variants N --output_dir DIR")
     args = parser.parse_args()
 
     # Resolve scenario preset
@@ -867,6 +905,18 @@ def main():
     elif args.total_timesteps is None:
         args.total_timesteps = 100_000  # default
 
+    # Scan route_dir for route files
+    import glob as _glob
+    route_files = None
+    if args.route_dir:
+        route_files = sorted(_glob.glob(os.path.join(args.route_dir, "*.rou.xml")))
+        if not route_files:
+            print(f"\n  ERROR: No .rou.xml files found in {args.route_dir}")
+            print(f"  Generate with: python src/generate_demand.py "
+                  f"--scenario {args.scenario} --num_variants 20 --output_dir {args.route_dir}")
+            raise SystemExit(1)
+        print(f"\n  Route randomization: {len(route_files)} route files in {args.route_dir}")
+
     max_seconds = args.max_hours * 3600 if args.max_hours else None
     run_id = get_run_id(args.tag)
     run_dir = os.path.join(EXPERIMENTS_DIR, run_id)
@@ -883,6 +933,8 @@ def main():
         "date": datetime.now().isoformat(),
         "net_file": args.net_file,
         "route_file": args.route_file,
+        "route_dir": args.route_dir,
+        "route_randomization": len(route_files) if route_files else 0,
         "total_timesteps": args.total_timesteps,
         "max_hours": args.max_hours,
         "num_seconds": args.num_seconds,
@@ -934,7 +986,8 @@ def main():
     model, train_time = train_ppo(
         args.net_file, args.route_file, args.num_seconds,
         args.total_timesteps, run_dir, max_seconds, args.curriculum, args.log_curriculum, args.num_cpus, args.resume,
-        entropy_annealing=args.entropy_annealing, episodes_per_save=args.episodes_per_save
+        entropy_annealing=args.entropy_annealing, episodes_per_save=args.episodes_per_save,
+        route_files=route_files,
     )
     meta["train_time_s"] = train_time
     meta["actual_timesteps"] = model.num_timesteps
