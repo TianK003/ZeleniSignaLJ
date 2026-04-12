@@ -9,7 +9,8 @@ import os
 HPC_DIR = os.path.dirname(os.path.abspath(__file__))
 
 REWARD_FNS = ["queue", "pressure", "diff-waiting-time"]
-LEARNING_RATES = [1e-3, 3e-4]
+LEARNING_RATES = [3e-3, 1e-3, 3e-4]
+ENT_COEFS = [0.02, 0.05, 0.1]
 SCENARIOS = ["morning_rush", "evening_rush"]
 EPISODES = 300
 NUM_ROUTE_VARIANTS = 100
@@ -21,9 +22,13 @@ ROUTE_DIRS = {
 }
 
 def lr_str(lr):
+    if lr == 3e-3: return "lr3e3"
     if lr == 1e-3: return "lr1e3"
     if lr == 3e-4: return "lr3e4"
     return f"lr{lr}"
+
+def ent_str(e):
+    return str(e).replace(".", "")
 
 def reward_str(r):
     return r.replace("-", "")
@@ -98,7 +103,7 @@ scripts = []
 route_script = generate_route_gen_script()
 print(f"  Route gen: hpc/sweep/{route_script} (run FIRST)")
 
-# ── Reward x LR x Scenario sweep ──
+# ── Base sweep: 3 rewards x 3 LRs x 2 scenarios = 18 jobs ──
 for scenario in SCENARIOS:
     ss = scenario_str(scenario)
     rd = ROUTE_DIRS[scenario]
@@ -112,11 +117,11 @@ for scenario in SCENARIOS:
             args = f"--scenario {scenario} --reward_fn {reward} --learning_rate {lr} --route_dir {rd}"
             scripts.append(write_script(fname, job, args, tag))
 
-# ── Entropy annealing variants (pressure + diff-waiting-time, both scenarios) ──
+# ── Entropy annealing: 3 rewards x 3 LRs x 2 scenarios = 18 jobs ──
 for scenario in SCENARIOS:
     ss = scenario_str(scenario)
     rd = ROUTE_DIRS[scenario]
-    for reward in ["pressure", "diff-waiting-time"]:
+    for reward in REWARD_FNS:
         for lr in LEARNING_RATES:
             rs = reward_str(reward)
             ls = lr_str(lr)
@@ -126,17 +131,19 @@ for scenario in SCENARIOS:
             args = f"--scenario {scenario} --reward_fn {reward} --learning_rate {lr} --entropy_annealing --route_dir {rd}"
             scripts.append(write_script(fname, job, args, tag))
 
-# ── Curriculum learning variants (both scenarios, pressure + queue) ──
+# ── Entropy coefficient sweep: 3 ent_coefs x best reward (pressure) x 2 LRs x 2 scenarios = 12 jobs ──
 for scenario in SCENARIOS:
     ss = scenario_str(scenario)
     rd = ROUTE_DIRS[scenario]
-    for reward in ["pressure", "queue"]:
-        rs = reward_str(reward)
-        tag = f"{ss}_{rs}_curriculum_{EPISODES}ep"
-        job = f"zs_{ss}_{rs}_curr"
-        fname = f"{ss}_{rs}_curriculum.slurm"
-        args = f"--scenario {scenario} --reward_fn {reward} --curriculum --route_dir {rd}"
-        scripts.append(write_script(fname, job, args, tag))
+    for ec in ENT_COEFS:
+        es = ent_str(ec)
+        for lr in [1e-3, 3e-4]:  # two most promising LRs
+            ls = lr_str(lr)
+            tag = f"{ss}_pressure_{ls}_ent{es}_{EPISODES}ep"
+            job = f"zs_{ss}_pr_{ls}_e{es}"
+            fname = f"{ss}_pressure_{ls}_ent{es}.slurm"
+            args = f"--scenario {scenario} --reward_fn pressure --learning_rate {lr} --ent_coef {ec} --route_dir {rd}"
+            scripts.append(write_script(fname, job, args, tag))
 
 # Generate submit script with dependency chain
 submit_path = os.path.join(HPC_DIR, "submit_all.sh")

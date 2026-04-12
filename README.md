@@ -74,11 +74,13 @@ python src/generate_demand.py --scenario all
 # 5. Učenje — enaka prometna obremenitev (lokalno, 50 epizod ~ 4 min)
 python src/experiment.py --episode_count 50 --tag local_50ep
 
-# 5b. Učenje — scenarij jutranje konice (priporočeno za produkcijo)
+# 5b. Učenje — scenarij jutranje konice (ena pot, lokalno testiranje)
 python src/experiment.py --scenario morning_rush --episode_count 50 --tag jutro_50ep
 
-# 5c. Napredno učenje po celem dnevu (Curriculum)
-python src/experiment.py --episode_count 50 --curriculum --tag napredno_ucenje
+# 5c. Učenje z naključnimi potmi (priporočeno za produkcijo — prepreči preveliko prilagajanje)
+python src/generate_demand.py --scenario morning_rush --num_variants 20 --output_dir data/routes/train-morning
+python src/experiment.py --scenario morning_rush --episode_count 50 \
+    --route_dir data/routes/train-morning --tag jutro_routerand_50ep
 
 # 6. Primerjava rezultatov in nadzorna plošča
 python src/experiment.py --compare_only
@@ -167,8 +169,13 @@ python src/experiment.py --compare_only
 | `--total_timesteps N` | Surovo število SB3 korakov |
 | `--max_hours H` | Zaustavitev po H urah (stenski čas) |
 | `--scenario` | `uniform` / `morning_rush` / `evening_rush` / `offpeak` |
+| `--route_dir DIR` | Mapa z več `.rou.xml` datotekami — vsaka epizoda uporabi naključno pot |
+| `--reward_fn` | `queue` / `pressure` / `diff-waiting-time` / `average-speed` |
+| `--learning_rate F` | Hitrost učenja (privzeto: 1e-3) |
+| `--ent_coef F` | Entropijski koeficient (privzeto: 0.05) |
+| `--entropy_annealing` | Linearno zmanjšanje entropije od ent_coef do 0.01 |
+| `--episodes_per_save N` | Kontrolna točka vsako N epizod (privzeto: 10) |
 | `--curriculum` | Naključni urni rezini 24h krivulje |
-| `--log_curriculum` | Beleženje RL vs. bazna linija vsako epizodo |
 | `--num_cpus N` | Vzporedni SUMO procesi (za HPC) |
 | `--resume PATH` | Nadaljevanje iz obstoječe kontrolne točke |
 | `--tag OZNAKA` | Oznaka eksperimenta (za identifikacijo) |
@@ -470,6 +477,7 @@ zeleni-signalj/
 │   ├── experiment.py         # Celoten eksperiment (bazna linija → učenje → evalvacija)
 │   ├── evaluate.py           # Multi-scenarij evalvacija (morning/evening/offpeak)
 │   ├── run_24h.py            # 24h simulacija z dinamicnim RL/fiksni cas preklapljanjem
+│   ├── run_rush_test.py      # Izoliran test generalizacije konicnih ur (50 poti x model)
 │   ├── config.py             # ID-ji križišč, parametri simulacije, PPO hiperparametri
 │   ├── agent_filter.py       # PettingZoo ovoj za filtriranje na 5 križišč
 │   ├── tls_programs.py       # Obnovitev izvornih SUMO programov za neopazovana križišča
@@ -481,30 +489,43 @@ zeleni-signalj/
 │   ├── collect_states.py      # Zbiranje stanj in latentnih aktivacij iz naučenega modela
 │   ├── explain.py             # Razložljivost: SHAP, odločitvena drevesa, UMAP
 │   ├── analyze_sim.py         # Analiza SUMO izhoda (teleporti, pretoki)
-│   └── dashboard.py           # HTML nadzorna plosca (8 zavihkov: scenariji, mega-politike, razlozljivost)
+│   └── dashboard.py           # HTML nadzorna plosca (9 zavihkov: scenariji, mega-politike, generalizacija, razlozljivost)
 ├── hpc/
 │   ├── common.sh             # Skupna HPC nastavitev (venv, SUMO_HOME)
 │   ├── traffic_rl.def        # Apptainer definicija vsebnika
-│   ├── sweep/                # Hiperparametrsko iskanje (30 SLURM skript)
+│   ├── sweep/                # Hiperparametrsko iskanje (48 SLURM skript)
 │   │   ├── generate_jobs.py  # Generator SLURM skript
-│   │   ├── submit_all.sh     # Oddaja vseh sweep opravil
-│   │   └── *.slurm           # Posamezne sweep skripte
-│   └── statistical-test/     # 24h statisticno testiranje mega-politik
+│   │   ├── submit_all.sh     # Oddaja z dvofaznim cevovodom (poti → učenje)
+│   │   ├── gen_train_routes.slurm  # Generiranje 100+100 ucnih poti (faza 1)
+│   │   └── *.slurm           # Posamezne ucne skripte (faza 2)
+│   └── statistical-test/     # Statisticno testiranje (24h mega-politike + konicni testi)
 │       ├── generate_mega_jobs.py  # Generator 11 SLURM skript (50 ponovitev + generiranje poti)
-│       ├── submit_all.sh          # Oddaja z dvofaznim cevovodom (poti → simulacije)
-│       ├── gen_routes.slurm       # Generiranje 50 prometnih poti (faza 1)
-│       └── mega_*.slurm           # 9 mega-politik + 1 bazna linija (faza 2)
+│       ├── generate_rush_jobs.py  # Generator konicnih testov (3+3 modelov + 2 bazni liniji)
+│       ├── submit_all.sh          # Oddaja mega-politik
+│       ├── submit_rush.sh         # Oddaja konicnih testov
+│       ├── gen_routes.slurm       # Generiranje 50 prometnih poti za mega-politike
+│       ├── gen_routes_morning_rush.slurm  # Generiranje 50 poti za jutranji test
+│       ├── gen_routes_evening_rush.slurm  # Generiranje 50 poti za vecerni test
+│       ├── mega_*.slurm           # 9 mega-politik + 1 bazna linija
+│       └── rush_*.slurm           # 6 modelov + 2 bazni liniji (konicni testi)
 ├── models/               # Shranjeni modeli (kontrolne točke)
 ├── logs/                 # Dnevniki učenja
 └── results/
-    ├── experiments/      # Rezultati po eksperimentih (meta.json, results.csv, model)
+    ├── experiments/      # Rezultati po eksperimentih
+    │   └── <run_id>/     # meta.json, results.csv, ppo_shared_policy.zip
+    │       └── checkpoints/  # ppo_policy_10ep.zip + .json, ppo_policy_20ep.zip + .json, ...
     ├── statistical-test/ # Rezultati 24h statisticnih testov (50 ponovitev x 10 pogojev)
     │   ├── M1E1/         # meta.json + 50x run_seed_*.json + summary.csv
     │   ├── ...           # M1E2, M1E3, M2E1, ..., M3E3
     │   └── baseline/     # Bazna linija (sami fiksni casi)
+    ├── rush-test/        # Rezultati testov generalizacije konicnih ur
+    │   ├── M1_morning/   # meta.json + 50x run_seed_*.json + summary.csv
+    │   ├── ...           # M2_morning, M3_morning, E1_evening, ..., E3_evening
+    │   ├── baseline_morning/  # Bazna linija (jutranja konica)
+    │   └── baseline_evening/  # Bazna linija (vecerna konica)
     ├── rush_hour_comparison.csv  # KPI primerjava po scenarijih konicnih ur
     ├── comparison_summary.csv    # KPI po posameznih kriziscih
-    └── dashboard.html    # Interaktivna nadzorna plosca (8 zavihkov)
+    └── dashboard.html    # Interaktivna nadzorna plosca (9 zavihkov)
 ```
 
 ## Tehnologije
@@ -517,28 +538,39 @@ zeleni-signalj/
 
 ## HPC eksperimenti
 
-### Hiperparametrsko iskanje (sweep)
+### Iskanje 1 (zaključeno): Učenje na eni poti
 
-30 pripravljenih SLURM skript v `hpc/sweep/` za sistematicno iskanje najboljse konfiguracije.
+Prvo iskanje: 24 konfiguracij x 200 epizod na 128 CPE-jih. Modeli so se učili na eni sami prometni poti na scenarij. Najboljši modeli so dosegli 12–18 % izboljšanje na učni poti, vendar niso posplošili na nevidene prometne vzorce (potrjeno s testi generalizacije koničnih ur: -15 % do -27 % poslabšanje na naključnih poteh).
+
+### Iskanje 2 (v teku): Učenje z naključnimi potmi
+
+48 SLURM skript v `hpc/sweep/`, generirane z `hpc/sweep/generate_jobs.py`. Vse uporabljajo `--route_dir` s 100 naključnimi prometnimi potmi na scenarij, da preprečijo preveliko prilagajanje na izvorno-ciljne pare (OD-pair overfitting).
 
 **Matrika eksperimentov:**
 - 3 nagradne funkcije: `queue`, `pressure`, `diff-waiting-time`
-- 2 hitrosti učenja: `1e-3`, `3e-4`
-- 3 dolžine učenja: 100, 250, 500 epizod
-- Entropy annealing variante (0.05 -> 0.01)
-- Curriculum learning variante
+- 3 hitrosti učenja: `3e-3`, `1e-3`, `3e-4`
+- 2 scenarija: `morning_rush`, `evening_rush`
+- Entropy annealing variante (vseh 18 kombinacij)
+- Iskanje entropijskega koeficienta (`ent_coef` = 0.02, 0.05, 0.1 za `pressure`)
+- 300 epizod, 24h časovna omejitev, 128 CPE-jev
+
+**Dvofazni cevovod:**
+1. `gen_train_routes.slurm` — generira 100 jutranjih + 100 večernih prometnih poti
+2. Vseh 48 učnih skript počaka na poti, nato teče vzporedno
+
+**Kontrolne točke:** Vsako 10. epizodo se shrani `ppo_policy_10ep.zip`, `ppo_policy_20ep.zip` itd. z metapodatki (`.json`). Tudi ob prekinitvi se shrani `ppo_model_latest.zip`.
 
 ```bash
-# Oddaj vse eksperimente
+# Oddaj vse (generiranje poti + učenje)
 bash hpc/sweep/submit_all.sh
 
-# Oddaj samo pressure variante
+# Preskoči generiranje poti (če poti že obstajajo)
+bash hpc/sweep/submit_all.sh --skip-routes
+
+# Filtriraj po ključni besedi
 bash hpc/sweep/submit_all.sh pressure
-
-# Oddaj samo 100-epizodne eksperimente
-bash hpc/sweep/submit_all.sh 100ep
-
-# Oddaj samo entropy annealing variante
+bash hpc/sweep/submit_all.sh morningrush
+bash hpc/sweep/submit_all.sh lr1e3
 bash hpc/sweep/submit_all.sh entanneal
 
 # Spremljaj status
