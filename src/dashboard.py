@@ -121,6 +121,7 @@ def _round_floats(obj, decimals=2):
 
 
 STATISTICAL_TEST_DIR = "results/statistical-test"
+RUSH_TEST_DIR = "results/rush-test"
 
 # Model descriptions for megapolicy combinations (from HPC sweep results)
 MORNING_MODELS = {
@@ -310,13 +311,148 @@ def load_megapolicy_results(base_dir=STATISTICAL_TEST_DIR):
     }
 
 
-def generate_html(experiments, output_path, megapolicy_data=None):
+def load_rush_test_results(base_dir=RUSH_TEST_DIR):
+    """Load rush-hour generalization test results and compute statistics."""
+    if not os.path.exists(base_dir):
+        return None
+
+    # Load all conditions
+    conditions = {}
+    for name in sorted(os.listdir(base_dir)):
+        d = os.path.join(base_dir, name)
+        meta_path = os.path.join(d, "meta.json")
+        csv_path = os.path.join(d, "summary.csv")
+        if not os.path.isdir(d) or not os.path.exists(csv_path):
+            continue
+        if not os.path.exists(meta_path):
+            continue
+        with open(meta_path) as f:
+            meta = json.load(f)
+        df = pd.read_csv(csv_path)
+        conditions[meta["tag"]] = {"meta": meta, "df": df}
+
+    if not conditions:
+        return None
+
+    # Group by scenario
+    scenario_groups = {}
+    for tag, cdata in conditions.items():
+        sc = cdata["meta"].get("scenario", "")
+        if sc not in scenario_groups:
+            scenario_groups[sc] = {}
+        scenario_groups[sc][tag] = cdata
+
+    # Expected policies per scenario
+    expected = {
+        "morning_rush": {
+            "baseline": "baseline_morning",
+            "models": ["M1_morning", "M2_morning", "M3_morning"],
+            "label": "Jutranja konica (06:00-10:00)",
+        },
+        "evening_rush": {
+            "baseline": "baseline_evening",
+            "models": ["E1_evening", "E2_evening", "E3_evening"],
+            "label": "Vecerna konica (14:00-18:00)",
+        },
+    }
+
+    scenarios = {}
+    for sc_key, sc_expect in expected.items():
+        sc_conds = scenario_groups.get(sc_key, {})
+        bl_tag = sc_expect["baseline"]
+        if bl_tag not in sc_conds:
+            continue  # no baseline = skip scenario
+
+        bl_df = sc_conds[bl_tag]["df"]
+
+        # Warnings for missing policies
+        warnings = [t for t in sc_expect["models"] if t not in sc_conds]
+
+        # Build condition stats
+        cond_list = []
+        for tag, cdata in sc_conds.items():
+            df = cdata["df"]
+            is_bl = cdata["meta"].get("baseline", False)
+            # Parse model key from tag (e.g. "M1" from "M1_morning")
+            model_key = tag.split("_")[0] if not is_bl else None
+            model_desc = ""
+            if model_key:
+                model_desc = MORNING_MODELS.get(model_key, EVENING_MODELS.get(model_key, ""))
+            entry = {
+                "tag": tag,
+                "is_baseline": is_bl,
+                "model_key": model_key or "",
+                "model_desc": model_desc,
+                "scenario": sc_key,
+                "n": len(df),
+                "total_reward": _desc_stats(df["total_reward"]),
+                "avg_queue": _desc_stats(df["avg_queue"]),
+                "avg_wait": _desc_stats(df["avg_wait"]),
+                "intersections": {},
+            }
+            for iname in INTERSECTION_NAMES:
+                entry["intersections"][iname] = {
+                    "reward": _desc_stats(df[f"reward_{iname}"]),
+                    "queue": _desc_stats(df[f"queue_{iname}"]),
+                    "wait": _desc_stats(df[f"wait_{iname}"]),
+                }
+            cond_list.append(entry)
+
+        # Comparisons: each model vs baseline (paired by seed)
+        comparisons = []
+        for tag, cdata in sc_conds.items():
+            if cdata["meta"].get("baseline", False):
+                continue
+            cond_df = cdata["df"]
+            merged = pd.merge(
+                cond_df[["seed", "total_reward", "avg_queue", "avg_wait"]],
+                bl_df[["seed", "total_reward", "avg_queue", "avg_wait"]],
+                on="seed", suffixes=("_rl", "_bl"))
+            comp = {
+                "tag": tag,
+                **_compare(merged["total_reward_rl"], merged["total_reward_bl"]),
+                "kpi_comparisons": {
+                    "avg_queue": _compare(merged["avg_queue_rl"], merged["avg_queue_bl"]),
+                    "avg_wait": _compare(merged["avg_wait_rl"], merged["avg_wait_bl"]),
+                },
+                "intersections": {},
+            }
+            for iname in INTERSECTION_NAMES:
+                col = f"reward_{iname}"
+                m = pd.merge(cond_df[["seed", col]], bl_df[["seed", col]],
+                             on="seed", suffixes=("_rl", "_bl"))
+                comp["intersections"][iname] = _compare(
+                    m[f"{col}_rl"], m[f"{col}_bl"])
+            comparisons.append(comp)
+
+        scenarios[sc_key] = {
+            "label": sc_expect["label"],
+            "conditions": cond_list,
+            "comparisons": comparisons,
+            "baseline_tag": bl_tag,
+            "warnings": warnings,
+        }
+
+    if not scenarios:
+        return None
+
+    return {
+        "scenarios": scenarios,
+        "intersection_names": INTERSECTION_NAMES,
+    }
+
+
+def generate_html(experiments, output_path, megapolicy_data=None,
+                  rush_test_data=None):
     # Round all floats to reduce JSON size (82KB → ~30KB)
     rounded = _round_floats(experiments)
     exp_json = json.dumps(rounded, default=str, separators=(',', ':'))
     mega_json = (json.dumps(_round_floats(megapolicy_data, decimals=4),
                             default=str, separators=(',', ':'))
                  if megapolicy_data else 'null')
+    rush_json = (json.dumps(_round_floats(rush_test_data, decimals=4),
+                            default=str, separators=(',', ':'))
+                 if rush_test_data else 'null')
 
     html = f"""<!DOCTYPE html>
 <html lang="sl">
@@ -474,6 +610,7 @@ def generate_html(experiments, output_path, megapolicy_data=None):
 <script>
 const experiments = {exp_json};
 const megaData = {mega_json};
+const rushData = {rush_json};
 const COLORS = ['#4ade80','#60a5fa','#f472b6','#facc15','#a78bfa','#fb923c','#34d399','#f87171','#38bdf8','#c084fc'];
 const INT_COLORS = {{'Kolodvor':'#60a5fa','Pivovarna':'#4ade80','Slovenska':'#f472b6','Trzaska':'#facc15','Askerceva':'#a78bfa'}};
 
@@ -483,6 +620,7 @@ var trainChartInst, stepChartInst, hpScatter1Inst, hpScatter2Inst;
 var megaOverallInst, megaImprovInst;
 var megaIntRewardInst, megaIntImprovInst;
 var megaWindowRewardInst, megaWindowImprovInst;
+var _rushCharts = {{}};
 var _tabCharts = {{}};
 var _scenarioData = {{}};
 var _scenarioSortState = {{}};
@@ -538,6 +676,7 @@ function render() {{
     <div class="tab" onclick="switchTab(5)">Hiperparametri</div>
     <div class="tab" onclick="switchTab(6)">Podrobnosti</div>
     <div class="tab" onclick="switchTab(7)">Interpretibilnost</div>
+    ${{rushData ? '<div class="tab" onclick="switchTab(8)">Generalizacija</div>' : ''}}
   </div>`;
 
   // Filter experiments by scenario
@@ -812,6 +951,160 @@ function render() {{
   h += '<div id="explPanel"></div>';
   h += '</div>'; // tab7
 
+  // ══════════════════════════════════════════
+  // TAB 8: Generalizacija (rush-hour generalization tests)
+  // ══════════════════════════════════════════
+  if (rushData) {{
+    h += '<div class="tab-content" id="tab8">';
+    h += '<h2 style="color:#4ade80;margin-bottom:4px">Test generalizacije konicnih ur</h2>';
+    h += '<p class="info-text" style="margin-bottom:14px">Izolirani 4-urni testi z 50 razlicnimi vzorci prometa na politiko. Meri posplosevalnost modelov brez 24-urnih kaskadnih napak.</p>';
+
+    const rushScenarios = ['morning_rush', 'evening_rush'];
+    const RUSH_LABELS = {{'morning_rush': 'Jutranja konica (06:00-10:00)', 'evening_rush': 'Vecerna konica (14:00-18:00)'}};
+
+    rushScenarios.forEach(sk => {{
+      const sc = rushData.scenarios[sk];
+      if (!sc) return;
+
+      h += `<h2>${{RUSH_LABELS[sk]}}</h2>`;
+
+      // Warnings for missing policies
+      if (sc.warnings && sc.warnings.length > 0) {{
+        h += `<div class="card" style="border-color:#fbbf24"><div class="card-title" style="color:#fbbf24">Manjkajoce politike</div>`;
+        h += `<p style="font-size:12px;color:#fbbf24">${{sc.warnings.join(', ')}} — rezultati niso na voljo</p></div>`;
+      }}
+
+      // KPI cards
+      const rComps = sc.comparisons;
+      const blCond = sc.conditions.find(c => c.is_baseline);
+      if (rComps.length > 0) {{
+        const bestR = rComps.reduce((b, c) => c.improvement_pct > b.improvement_pct ? c : b, rComps[0]);
+        const worstR = rComps.reduce((b, c) => c.improvement_pct < b.improvement_pct ? c : b, rComps[0]);
+        const sigCnt = rComps.filter(c => c.paired_t_p < 0.05).length;
+
+        h += '<div class="kpi-grid">';
+        h += `<div class="kpi"><div class="kpi-label">Stevilo pogojev</div><div class="kpi-value neutral">${{sc.conditions.length}}</div><div class="kpi-sub">${{rComps.length}} politik + bazna linija</div></div>`;
+        h += `<div class="kpi"><div class="kpi-label">Najboljsa politika</div><div class="kpi-value ${{pctClass(bestR.improvement_pct)}}">${{fmtPct(bestR.improvement_pct)}}</div><div class="kpi-sub">${{bestR.tag}}</div></div>`;
+        h += `<div class="kpi"><div class="kpi-label">Najslabsa politika</div><div class="kpi-value ${{pctClass(worstR.improvement_pct)}}">${{fmtPct(worstR.improvement_pct)}}</div><div class="kpi-sub">${{worstR.tag}}</div></div>`;
+        h += `<div class="kpi"><div class="kpi-label">Ponovitve na pogoj</div><div class="kpi-value neutral">${{blCond ? blCond.n : 50}}</div><div class="kpi-sub">razlicni vzorci prometa</div></div>`;
+        h += `<div class="kpi"><div class="kpi-label">Bazna linija (povp.)</div><div class="kpi-value neutral">${{blCond ? fmt(blCond.total_reward.mean, 0) : '-'}}</div><div class="kpi-sub">povp. skupna nagrada</div></div>`;
+        h += `<div class="kpi"><div class="kpi-label">Stat. znacilne (p&lt;0.05)</div><div class="kpi-value ${{sigCnt > 0 ? 'positive' : 'neutral'}}">${{sigCnt}} / ${{rComps.length}}</div><div class="kpi-sub">Parni t-test</div></div>`;
+        h += '</div>';
+      }}
+
+      // Overall comparison charts
+      h += '<div class="grid-2">';
+      h += `<div class="chart-box"><div class="card-title">Povprecna skupna nagrada z 95% IZ (nizja = boljsa)</div><canvas id="rush_${{sk}}_overall"></canvas></div>`;
+      h += `<div class="chart-box"><div class="card-title">Izboljsanje glede na bazno linijo (%)</div><canvas id="rush_${{sk}}_improv"></canvas></div>`;
+      h += '</div>';
+
+      // Multi-KPI summary table
+      h += '<div class="card"><div class="card-title">Primerjava KPI metrik</div>';
+      h += '<div class="table-wrap"><table><thead><tr>';
+      h += '<th>Politika</th><th>Nagrada (povp.)</th><th>Nagrada (%)</th>';
+      h += '<th>Povp. vrsta</th><th>Vrsta (%)</th>';
+      h += '<th>Povp. cakanje (s)</th><th>Cakanje (%)</th>';
+      h += '</tr></thead><tbody>';
+      if (blCond) {{
+        h += `<tr style="background:#1e293b">
+          <td><strong>Bazna linija</strong></td>
+          <td>${{fmt(blCond.total_reward.mean, 0)}}</td><td><span class="badge badge-gray">referenca</span></td>
+          <td>${{fmt(blCond.avg_queue.mean, 1)}}</td><td><span class="badge badge-gray">referenca</span></td>
+          <td>${{fmt(blCond.avg_wait.mean, 0)}}</td><td><span class="badge badge-gray">referenca</span></td>
+        </tr>`;
+      }}
+      rComps.forEach(c => {{
+        const cond = sc.conditions.find(x => x.tag === c.tag);
+        if (!cond) return;
+        const qComp = c.kpi_comparisons.avg_queue;
+        const wComp = c.kpi_comparisons.avg_wait;
+        h += `<tr>
+          <td><strong>${{c.tag}}</strong><br><span class="info-text">${{cond.model_desc}}</span></td>
+          <td>${{fmt(cond.total_reward.mean, 0)}}</td>
+          <td><span class="badge ${{badgeClass(c.improvement_pct)}}">${{fmtPct(c.improvement_pct)}}</span></td>
+          <td>${{fmt(cond.avg_queue.mean, 1)}}</td>
+          <td><span class="badge ${{badgeClass(-qComp.improvement_pct)}}">${{fmtPct(-qComp.improvement_pct)}}</span></td>
+          <td>${{fmt(cond.avg_wait.mean, 0)}}</td>
+          <td><span class="badge ${{badgeClass(-wComp.improvement_pct)}}">${{fmtPct(-wComp.improvement_pct)}}</span></td>
+        </tr>`;
+      }});
+      h += '</tbody></table></div></div>';
+
+      // Per-intersection breakdown
+      h += '<h2 style="font-size:13px">Primerjava po kriziscih</h2>';
+      h += '<div class="controls">';
+      h += `<label>Politike: <select id="rush_${{sk}}_intSelect" onchange="updateRushIntersections('${{sk}}')" multiple size="3" style="min-width:200px">`;
+      rComps.forEach((c, i) => {{
+        const sel = i < 3 ? 'selected' : '';
+        h += `<option value="${{c.tag}}" ${{sel}}>${{c.tag}} (${{fmtPct(c.improvement_pct)}})</option>`;
+      }});
+      h += '</select></label>';
+      h += '<span class="info-text">Drzite Ctrl za izbiro vec politik</span>';
+      h += '</div>';
+      h += '<div class="grid-2">';
+      h += `<div class="chart-box"><div class="card-title">Povprecna nagrada po kriziscih (abs.)</div><canvas id="rush_${{sk}}_intReward"></canvas></div>`;
+      h += `<div class="chart-box"><div class="card-title">Izboljsanje po kriziscih (%)</div><canvas id="rush_${{sk}}_intImprov"></canvas></div>`;
+      h += '</div>';
+
+      // Statistical significance table
+      h += '<h2 style="font-size:13px">Statisticna analiza</h2>';
+      h += '<div class="card"><div class="card-title">Primerjava z bazno linijo (Parni t-test, Wilcoxon, Cohen d)</div>';
+      h += '<div class="table-wrap"><table><thead><tr>';
+      h += '<th>Politika</th><th>Povp. nagrada</th><th>Mediana</th><th>Std</th>';
+      h += '<th>95% IZ</th><th>Parni t</th><th>Parni p</th>';
+      h += '<th>Wilcoxon W</th><th>Wilcoxon p</th><th>Cohen d</th><th>Izboljsanje</th>';
+      h += '</tr></thead><tbody>';
+      if (blCond) {{
+        const s = blCond.total_reward;
+        h += `<tr style="background:#1e293b">
+          <td><strong>Bazna linija</strong></td>
+          <td>${{fmt(s.mean,0)}}</td><td>${{fmt(s.median,0)}}</td><td>${{fmt(s.std,0)}}</td>
+          <td>[${{fmt(s.ci_low,0)}}, ${{fmt(s.ci_high,0)}}]</td>
+          <td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>
+          <td><span class="badge badge-gray">referenca</span></td>
+        </tr>`;
+      }}
+      rComps.forEach(c => {{
+        const cond = sc.conditions.find(x => x.tag === c.tag);
+        const s = cond ? cond.total_reward : {{}};
+        const pBadge = c.paired_t_p < 0.001 ? 'badge-green' : c.paired_t_p < 0.01 ? 'badge-green' : c.paired_t_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+        const pLabel = c.paired_t_p < 0.001 ? '***' : c.paired_t_p < 0.01 ? '**' : c.paired_t_p < 0.05 ? '*' : 'n.s.';
+        const wpBadge = c.wilcoxon_p < 0.001 ? 'badge-green' : c.wilcoxon_p < 0.01 ? 'badge-green' : c.wilcoxon_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+        const wpLabel = c.wilcoxon_p < 0.001 ? '***' : c.wilcoxon_p < 0.01 ? '**' : c.wilcoxon_p < 0.05 ? '*' : 'n.s.';
+        const absD = Math.abs(c.cohens_d);
+        const dLabel = absD > 0.8 ? 'Velik' : absD > 0.5 ? 'Srednji' : absD > 0.2 ? 'Majhen' : 'Zanem.';
+        const dBadge = absD > 0.8 ? (c.cohens_d > 0 ? 'badge-green' : 'badge-red') : absD > 0.5 ? 'badge-yellow' : 'badge-gray';
+        h += `<tr>
+          <td><strong>${{c.tag}}</strong></td>
+          <td>${{fmt(s.mean||0,0)}}</td><td>${{fmt(s.median||0,0)}}</td><td>${{fmt(s.std||0,0)}}</td>
+          <td>[${{fmt(s.ci_low||0,0)}}, ${{fmt(s.ci_high||0,0)}}]</td>
+          <td>${{c.paired_t.toFixed(2)}}</td>
+          <td><span class="badge ${{pBadge}}">${{c.paired_t_p < 0.0001 ? c.paired_t_p.toExponential(2) : c.paired_t_p.toFixed(4)}} ${{pLabel}}</span></td>
+          <td>${{fmt(c.wilcoxon_w,0)}}</td>
+          <td><span class="badge ${{wpBadge}}">${{c.wilcoxon_p < 0.0001 ? c.wilcoxon_p.toExponential(2) : c.wilcoxon_p.toFixed(4)}} ${{wpLabel}}</span></td>
+          <td><span class="badge ${{dBadge}}">${{c.cohens_d.toFixed(3)}} (${{dLabel}})</span></td>
+          <td><span class="badge ${{badgeClass(c.improvement_pct)}}">${{fmtPct(c.improvement_pct)}}</span></td>
+        </tr>`;
+      }});
+      h += '</tbody></table></div></div>';
+
+      // Per-policy drill-down
+      h += '<h2 style="font-size:13px">Podrobnosti politike</h2>';
+      h += '<div class="controls">';
+      h += `<label>Politika: <select id="rush_${{sk}}_detailSelect" onchange="updateRushDetail('${{sk}}')">`;
+      rComps.forEach((c, i) => {{
+        h += `<option value="${{c.tag}}" ${{i===0?'selected':''}}>${{c.tag}}</option>`;
+      }});
+      h += '</select></label>';
+      h += '</div>';
+      h += `<div id="rush_${{sk}}_detailPanel"></div>`;
+
+      h += '<hr style="border-color:#334155;margin:20px 0">';
+    }});  // end rushScenarios.forEach
+
+    h += '</div>'; // tab8
+  }}
+
   app.innerHTML = h;
 
   // Initialize all views
@@ -827,6 +1120,15 @@ function render() {{
     updateMegaIntersections();
     updateMegaWindows();
     updateMegaDetail();
+  }}
+  if (rushData) {{
+    ['morning_rush', 'evening_rush'].forEach(sk => {{
+      if (rushData.scenarios[sk]) {{
+        updateRushOverall(sk);
+        updateRushIntersections(sk);
+        updateRushDetail(sk);
+      }}
+    }});
   }}
 }}
 
@@ -1859,6 +2161,275 @@ function updateMegaDetail() {{
   panel.innerHTML = h;
 }}
 
+// ══════════════════════════════════════════
+// TAB 8: Generalizacija (rush-hour tests)
+// ══════════════════════════════════════════
+
+function updateRushOverall(sk) {{
+  if (!rushData || !rushData.scenarios[sk]) return;
+  const sc = rushData.scenarios[sk];
+  const conds = sc.conditions;
+  const comps = sc.comparisons;
+
+  // Sort: baseline first, then by tag
+  const sorted = [...conds].sort((a, b) => {{
+    if (a.is_baseline) return -1;
+    if (b.is_baseline) return 1;
+    return a.tag.localeCompare(b.tag);
+  }});
+
+  const labels = sorted.map(c => c.is_baseline ? 'Bazna linija' : c.tag);
+  const means = sorted.map(c => Math.abs(c.total_reward.mean));
+  const errorBars = sorted.map(c => [Math.abs(c.total_reward.ci_high), Math.abs(c.total_reward.ci_low)]);
+  const bgColors = sorted.map(c => c.is_baseline ? '#475569' : '#4ade80');
+
+  // Overall bar chart with error bars
+  const k1 = sk + '_overall';
+  if (_rushCharts[k1]) _rushCharts[k1].destroy();
+  const ctx1 = document.getElementById('rush_' + sk + '_overall')?.getContext('2d');
+  if (ctx1) {{
+    _rushCharts[k1] = new Chart(ctx1, {{
+      type: 'bar',
+      data: {{ labels, datasets: [{{
+        label: 'Povp. |nagrada|',
+        data: means,
+        backgroundColor: bgColors,
+        borderRadius: 3,
+        _errorBars: errorBars,
+      }}] }},
+      options: {{
+        responsive: true,
+        plugins: {{
+          legend: {{ display: false }},
+          tooltip: {{
+            callbacks: {{
+              afterBody: (items) => {{
+                const i = items[0].dataIndex;
+                const c = sorted[i];
+                return `95% IZ: [${{fmt(c.total_reward.ci_low,0)}}, ${{fmt(c.total_reward.ci_high,0)}}]\\nStd: ${{fmt(c.total_reward.std,0)}}`;
+              }}
+            }}
+          }}
+        }},
+        scales: {{
+          x: {{ ticks: {{ color: '#94a3b8', maxRotation: 45, font: {{ size: 10 }} }}, grid: {{ color: '#1e293b' }} }},
+          y: {{ ticks: {{ color: '#94a3b8' }}, grid: {{ color: '#334155' }},
+               title: {{ display: true, text: '|Skupna nagrada| (nizja = boljsa)', color: '#94a3b8' }} }}
+        }}
+      }},
+      plugins: [errorBarPlugin]
+    }});
+  }}
+
+  // Improvement chart
+  const k2 = sk + '_improv';
+  if (_rushCharts[k2]) _rushCharts[k2].destroy();
+  const ctx2 = document.getElementById('rush_' + sk + '_improv')?.getContext('2d');
+  if (ctx2) {{
+    const sortedComps = [...comps].sort((a, b) => b.improvement_pct - a.improvement_pct);
+    _rushCharts[k2] = new Chart(ctx2, {{
+      type: 'bar',
+      data: {{
+        labels: sortedComps.map(c => c.tag),
+        datasets: [{{
+          label: 'Izboljsanje %',
+          data: sortedComps.map(c => c.improvement_pct),
+          backgroundColor: sortedComps.map(c => c.improvement_pct >= 0 ? '#4ade80' : '#f87171'),
+          borderRadius: 3,
+        }}]
+      }},
+      options: {{
+        indexAxis: 'y',
+        responsive: true,
+        plugins: {{
+          legend: {{ display: false }},
+          tooltip: {{
+            callbacks: {{
+              afterBody: (items) => {{
+                const tag = items[0].label;
+                const c = comps.find(x => x.tag === tag);
+                if (!c) return '';
+                return `Parni t-test p=${{c.paired_t_p < 0.0001 ? c.paired_t_p.toExponential(2) : c.paired_t_p.toFixed(4)}}\\nCohen d=${{c.cohens_d.toFixed(3)}}`;
+              }}
+            }}
+          }}
+        }},
+        scales: {{
+          x: {{ ticks: {{ color: '#94a3b8', callback: v => v + '%' }}, grid: {{ color: '#334155' }},
+               title: {{ display: true, text: 'Izboljsanje glede na bazno linijo (%)', color: '#94a3b8' }} }},
+          y: {{ ticks: {{ color: '#94a3b8', font: {{ size: 11 }} }}, grid: {{ color: '#1e293b' }} }}
+        }}
+      }}
+    }});
+  }}
+}}
+
+function updateRushIntersections(sk) {{
+  if (!rushData || !rushData.scenarios[sk]) return;
+  const sc = rushData.scenarios[sk];
+  const sel = document.getElementById('rush_' + sk + '_intSelect');
+  if (!sel) return;
+  const selected = Array.from(sel.selectedOptions).map(o => o.value);
+  if (selected.length === 0) return;
+
+  const intNames = rushData.intersection_names;
+  const blCond = sc.conditions.find(c => c.is_baseline);
+
+  // Reward bar chart
+  const k1 = sk + '_intReward';
+  if (_rushCharts[k1]) _rushCharts[k1].destroy();
+  const ctx1 = document.getElementById('rush_' + sk + '_intReward')?.getContext('2d');
+  if (ctx1) {{
+    const datasets = [];
+    if (blCond) {{
+      datasets.push({{
+        label: 'Bazna linija',
+        data: intNames.map(n => Math.abs(blCond.intersections[n].reward.mean)),
+        backgroundColor: '#475569',
+        borderRadius: 3,
+      }});
+    }}
+    selected.forEach((tag, idx) => {{
+      const cond = sc.conditions.find(c => c.tag === tag);
+      if (!cond) return;
+      datasets.push({{
+        label: tag,
+        data: intNames.map(n => Math.abs(cond.intersections[n].reward.mean)),
+        backgroundColor: COLORS[idx % COLORS.length],
+        borderRadius: 3,
+      }});
+    }});
+    _rushCharts[k1] = new Chart(ctx1, {{
+      type: 'bar',
+      data: {{ labels: intNames, datasets }},
+      options: {{
+        responsive: true,
+        plugins: {{ legend: {{ labels: {{ color: '#94a3b8', font: {{ size: 11 }} }} }} }},
+        scales: {{
+          x: {{ ticks: {{ color: '#94a3b8' }}, grid: {{ color: '#1e293b' }} }},
+          y: {{ ticks: {{ color: '#94a3b8' }}, grid: {{ color: '#334155' }},
+               title: {{ display: true, text: '|Nagrada| (nizja = boljsa)', color: '#94a3b8' }} }}
+        }}
+      }}
+    }});
+  }}
+
+  // Improvement % chart
+  const k2 = sk + '_intImprov';
+  if (_rushCharts[k2]) _rushCharts[k2].destroy();
+  const ctx2 = document.getElementById('rush_' + sk + '_intImprov')?.getContext('2d');
+  if (ctx2) {{
+    const datasets = selected.map((tag, idx) => {{
+      const comp = sc.comparisons.find(c => c.tag === tag);
+      if (!comp) return null;
+      return {{
+        label: tag,
+        data: intNames.map(n => comp.intersections[n].improvement_pct),
+        backgroundColor: COLORS[idx % COLORS.length],
+        borderRadius: 3,
+      }};
+    }}).filter(Boolean);
+    _rushCharts[k2] = new Chart(ctx2, {{
+      type: 'bar',
+      data: {{ labels: intNames, datasets }},
+      options: {{
+        responsive: true,
+        plugins: {{ legend: {{ labels: {{ color: '#94a3b8', font: {{ size: 11 }} }} }} }},
+        scales: {{
+          x: {{ ticks: {{ color: '#94a3b8' }}, grid: {{ color: '#1e293b' }} }},
+          y: {{ ticks: {{ color: '#94a3b8', callback: v => v + '%' }}, grid: {{ color: '#334155' }},
+               title: {{ display: true, text: 'Izboljsanje (%)', color: '#94a3b8' }} }}
+        }}
+      }}
+    }});
+  }}
+}}
+
+function updateRushDetail(sk) {{
+  if (!rushData || !rushData.scenarios[sk]) return;
+  const sc = rushData.scenarios[sk];
+  const sel = document.getElementById('rush_' + sk + '_detailSelect');
+  if (!sel) return;
+  const tag = sel.value;
+  const comp = sc.comparisons.find(c => c.tag === tag);
+  const cond = sc.conditions.find(c => c.tag === tag);
+  const panel = document.getElementById('rush_' + sk + '_detailPanel');
+  if (!comp || !cond || !panel) return;
+
+  let h = '';
+
+  // Model info
+  h += '<div class="card"><div class="card-title">Model</div>';
+  h += `<div class="detail-grid">`;
+  h += `<div class="detail-item"><span class="detail-label">Oznaka:</span> <span class="detail-value">${{cond.model_key}}</span></div>`;
+  h += `<div class="detail-item"><span class="detail-label">Opis:</span> <span class="detail-value">${{cond.model_desc}}</span></div>`;
+  h += `<div class="detail-item"><span class="detail-label">Ponovitve:</span> <span class="detail-value">${{cond.n}}</span></div>`;
+  h += `<div class="detail-item"><span class="detail-label">Skupno izboljsanje:</span> <span class="detail-value ${{pctClass(comp.improvement_pct)}}">${{fmtPct(comp.improvement_pct)}}</span></div>`;
+  h += '</div></div>';
+
+  // Per-intersection table
+  const blCond = sc.conditions.find(c => c.is_baseline);
+  h += '<div class="card"><div class="card-title">Primerjava po kriziscih (nagrada)</div>';
+  h += '<div class="table-wrap"><table><thead><tr>';
+  h += '<th>Krizisce</th><th>Bazna (povp.)</th><th>Politika (povp.)</th><th>Izboljsanje</th>';
+  h += '<th>Parni p</th><th>Wilcoxon p</th><th>Cohen d</th>';
+  h += '</tr></thead><tbody>';
+  rushData.intersection_names.forEach(iname => {{
+    const ic = comp.intersections[iname];
+    const blR = blCond ? blCond.intersections[iname].reward.mean : 0;
+    const mR = cond.intersections[iname].reward.mean;
+    const pB = ic.paired_t_p < 0.001 ? 'badge-green' : ic.paired_t_p < 0.01 ? 'badge-green' : ic.paired_t_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+    const pL = ic.paired_t_p < 0.001 ? '***' : ic.paired_t_p < 0.01 ? '**' : ic.paired_t_p < 0.05 ? '*' : 'n.s.';
+    const wB = ic.wilcoxon_p < 0.001 ? 'badge-green' : ic.wilcoxon_p < 0.01 ? 'badge-green' : ic.wilcoxon_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+    const wL = ic.wilcoxon_p < 0.001 ? '***' : ic.wilcoxon_p < 0.01 ? '**' : ic.wilcoxon_p < 0.05 ? '*' : 'n.s.';
+    const absD = Math.abs(ic.cohens_d);
+    const dL = absD > 0.8 ? 'Velik' : absD > 0.5 ? 'Srednji' : absD > 0.2 ? 'Majhen' : 'Zanem.';
+    const dB = absD > 0.8 ? (ic.cohens_d > 0 ? 'badge-green' : 'badge-red') : absD > 0.5 ? 'badge-yellow' : 'badge-gray';
+    h += `<tr>
+      <td><strong style="color:${{INT_COLORS[iname]||'#e2e8f0'}}">${{iname}}</strong></td>
+      <td>${{fmt(blR, 0)}}</td>
+      <td>${{fmt(mR, 0)}}</td>
+      <td><span class="badge ${{badgeClass(ic.improvement_pct)}}">${{fmtPct(ic.improvement_pct)}}</span></td>
+      <td><span class="badge ${{pB}}">${{ic.paired_t_p < 0.0001 ? ic.paired_t_p.toExponential(2) : ic.paired_t_p.toFixed(4)}} ${{pL}}</span></td>
+      <td><span class="badge ${{wB}}">${{ic.wilcoxon_p < 0.0001 ? ic.wilcoxon_p.toExponential(2) : ic.wilcoxon_p.toFixed(4)}} ${{wL}}</span></td>
+      <td><span class="badge ${{dB}}">${{ic.cohens_d.toFixed(3)}} (${{dL}})</span></td>
+    </tr>`;
+  }});
+  h += '</tbody></table></div></div>';
+
+  // Additional KPI comparison (queue and wait)
+  h += '<div class="card"><div class="card-title">Dodatne metrike</div>';
+  h += '<div class="table-wrap"><table><thead><tr>';
+  h += '<th>Metrika</th><th>Bazna (povp.)</th><th>Politika (povp.)</th><th>Izboljsanje</th>';
+  h += '<th>Parni p</th><th>Cohen d</th>';
+  h += '</tr></thead><tbody>';
+  const kpis = [
+    ['Povp. vrsta', 'avg_queue', blCond ? blCond.avg_queue.mean : 0, cond.avg_queue.mean, comp.kpi_comparisons.avg_queue, 1],
+    ['Povp. cakanje (s)', 'avg_wait', blCond ? blCond.avg_wait.mean : 0, cond.avg_wait.mean, comp.kpi_comparisons.avg_wait, 0],
+  ];
+  kpis.forEach(([label, key, blVal, mVal, kc, dec]) => {{
+    const pB = kc.paired_t_p < 0.001 ? 'badge-green' : kc.paired_t_p < 0.05 ? 'badge-yellow' : 'badge-gray';
+    const pL = kc.paired_t_p < 0.001 ? '***' : kc.paired_t_p < 0.01 ? '**' : kc.paired_t_p < 0.05 ? '*' : 'n.s.';
+    // Negate for queue/wait (lower is better)
+    const dispPct = -kc.improvement_pct;
+    const dispD = -kc.cohens_d;
+    const absD = Math.abs(dispD);
+    const dL = absD > 0.8 ? 'Velik' : absD > 0.5 ? 'Srednji' : absD > 0.2 ? 'Majhen' : 'Zanem.';
+    const dB = absD > 0.8 ? (dispD > 0 ? 'badge-green' : 'badge-red') : absD > 0.5 ? 'badge-yellow' : 'badge-gray';
+    h += `<tr>
+      <td><strong>${{label}}</strong></td>
+      <td>${{fmt(blVal, dec)}}</td>
+      <td>${{fmt(mVal, dec)}}</td>
+      <td><span class="badge ${{badgeClass(dispPct)}}">${{fmtPct(dispPct)}}</span></td>
+      <td><span class="badge ${{pB}}">${{kc.paired_t_p < 0.0001 ? kc.paired_t_p.toExponential(2) : kc.paired_t_p.toFixed(4)}} ${{pL}}</span></td>
+      <td><span class="badge ${{dB}}">${{dispD.toFixed(3)}} (${{dL}})</span></td>
+    </tr>`;
+  }});
+  h += '</tbody></table></div></div>';
+
+  panel.innerHTML = h;
+}}
+
 </script>
 </body>
 </html>"""
@@ -2029,7 +2600,9 @@ def main():
 
     experiments = load_experiments()
     megapolicy_data = load_megapolicy_results()
-    generate_html(experiments, args.output, megapolicy_data=megapolicy_data)
+    rush_test_data = load_rush_test_results()
+    generate_html(experiments, args.output, megapolicy_data=megapolicy_data,
+                  rush_test_data=rush_test_data)
 
 
 if __name__ == "__main__":

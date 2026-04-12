@@ -38,7 +38,7 @@ import pandas as pd
 import sumo_rl
 import supersuit as ss
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback
 
 from config import (
     TS_IDS, TS_NAMES, NUM_AGENTS, STEPS_PER_EPISODE,
@@ -275,6 +275,40 @@ class TrainingLogCallback(BaseCallback):
             df_steps.to_csv(step_log_path, index=False)
             print(f"  Step-level training log saved: {step_log_path} "
                   f"({len(self._step_log_rows)} data points)")
+
+
+class ExplicitCheckpointCallback(BaseCallback):
+    """Save model explicitly every N on_step calls with metadata JSON."""
+    def __init__(self, save_path, save_freq, log_callback=None,
+                 baseline_total_reward=None, verbose=0):
+        super().__init__(verbose)
+        self.save_path = save_path
+        self.save_freq = save_freq
+        self.log_callback = log_callback
+        self.baseline_total_reward = baseline_total_reward
+        self._save_count = 0
+
+    def _on_step(self):
+        if self.n_calls % self.save_freq == 0:
+            self._save_count += 1
+            name = f"ppo_policy_{self.num_timesteps}steps"
+            path = os.path.join(self.save_path, name)
+            self.model.save(path)
+            # Save metadata
+            avg_r = 0.0
+            if self.log_callback and self.log_callback._step_rewards:
+                recent = self.log_callback._step_rewards[-500:]
+                avg_r = float(np.mean(recent))
+            meta = {
+                "timesteps": self.num_timesteps,
+                "rollout": self._save_count,
+                "avg_step_reward_last500": avg_r,
+                "baseline_total_reward": self.baseline_total_reward,
+            }
+            with open(os.path.join(self.save_path, f"{name}.json"), "w") as f:
+                json.dump(meta, f, indent=2)
+            print(f"  [Checkpoint] {name}.zip ({self.num_timesteps} steps, avg_r={avg_r:.2f})")
+        return True
 
 
 # ── Environment creation ──
@@ -535,7 +569,8 @@ def run_evaluation(net_file, route_file, num_seconds, model):
 
 def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
               max_seconds=None, run_curriculum=False, log_curriculum=False, num_cpus=1, resume_model_path=None,
-              entropy_annealing=False, episodes_per_save=25, route_files=None):
+              entropy_annealing=False, episodes_per_save=10, route_files=None,
+              baseline_total_reward=None):
     """
     Train PPO with parameter sharing via SuperSuit.
     All traffic signals share one policy (standard IPPO approach).
@@ -544,6 +579,8 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
         route_files: Optional list of route file paths for route randomization.
                      Each episode picks a random file from this list, copying it
                      to the training route path so the env picks up new OD pairs.
+        baseline_total_reward: Total reward from the fixed-time baseline run.
+                               Used to compute improvement % in checkpoint metadata.
     Returns the trained model.
     """
     use_route_rotation = route_files and len(route_files) > 1
@@ -615,28 +652,23 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
 
     # Training Log callback
     log_path = os.path.join(run_dir, "training_log.csv")
-    callbacks = [TrainingLogCallback(log_path, print_freq=5000,
-                                     steps_per_episode=STEPS_PER_EPISODE)]
-                                     
-    # Checkpoint every N episodes. CheckpointCallback.save_freq counts
-    # _on_step() calls (one per global 'brain' step), not total timesteps.
-    # Total timesteps between saves = save_freq * num_envs.
-    num_envs = num_cpus * NUM_AGENTS
-    checkpoint_freq = max(1, (episodes_per_save * STEPS_PER_EPISODE) // num_envs)
-    
+    log_callback = TrainingLogCallback(log_path, print_freq=5000,
+                                       steps_per_episode=STEPS_PER_EPISODE)
+    callbacks = [log_callback]
+
+    # Checkpoint directory for explicit saves
     checkpoint_dir = os.path.join(run_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
-    
-    print(f"  [Checkpoints] Saving every {episodes_per_save} episodes.")
-    print(f"                Internal sync frequency: save every {checkpoint_freq} global brain steps.")
-    print(f"                Destination: {checkpoint_dir}/")
 
-    checkpoint_callback = CheckpointCallback(
-        save_freq=checkpoint_freq,
-        save_path=checkpoint_dir,
-        name_prefix="ppo_model"
-    )
-    callbacks.append(checkpoint_callback)
+    # For the non-curriculum path (single learn() call), add a callback that
+    # saves explicitly. save_freq = n_steps so it saves after every rollout.
+    ckpt_callback = ExplicitCheckpointCallback(
+        save_path=checkpoint_dir, save_freq=N_STEPS,
+        log_callback=log_callback, baseline_total_reward=baseline_total_reward)
+    callbacks.append(ckpt_callback)
+
+    print(f"  [Checkpoints] Saving every rollout ({N_STEPS} steps) + every {episodes_per_save} episodes to {checkpoint_dir}/")
+
     if max_seconds:
         callbacks.append(TimeLimitCallback(max_seconds))
     if entropy_annealing:
@@ -650,101 +682,149 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     print(f"  Training PPO (stop: {stop_desc})...")
 
     t_start = time.time()
-    
-    if run_curriculum or use_route_rotation:
-        import shutil as _shutil
-        desc_parts = []
-        if run_curriculum:
-            desc_parts.append("Curriculum")
-        if use_route_rotation:
-            desc_parts.append(f"Route randomization ({len(route_files)} files)")
-        print(f"\n  [{' + '.join(desc_parts)}] Per-episode training loop...")
-        episodes = total_timesteps // STEPS_PER_EPISODE
-        if episodes == 0: episodes = 1
 
-        for ep in range(episodes):
-            global CURRENT_HOUR, CURRENT_VPH
-
-            # Route randomization: copy a random route file each episode
-            if use_route_rotation and ep > 0:
-                chosen = random.choice(route_files)
-                _shutil.copy(chosen, train_route_file)
-                if ep % 25 == 0:
-                    print(f"     Route: {os.path.basename(chosen)}")
-
+    # Wrap training in try/finally so the model is ALWAYS saved, even on crash/timeout
+    try:
+        if run_curriculum or use_route_rotation:
+            import shutil as _shutil
+            desc_parts = []
             if run_curriculum:
-                if ep > 0:
-                    hour_of_day = random.uniform(0, 24)
-                    CURRENT_HOUR = hour_of_day
-                    vph = get_vph(hour_of_day, TOTAL_DAILY_CARS)
-                    CURRENT_VPH = vph
-                    vps = vph / 3600.0
+                desc_parts.append("Curriculum")
+            if use_route_rotation:
+                desc_parts.append(f"Route randomization ({len(route_files)} files)")
+            print(f"\n  [{' + '.join(desc_parts)}] Per-episode training loop...")
+            episodes = total_timesteps // STEPS_PER_EPISODE
+            if episodes == 0: episodes = 1
 
-                    print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
-                    print(f"     Random Time of day: {hour_of_day:.1f}h, Traffic Flow: {vph:.0f} cars/hour")
+            for ep in range(episodes):
+                global CURRENT_HOUR, CURRENT_VPH
 
-                    write_demand_xml([(0, num_seconds, vps)], net_file, tmp_trips, train_route_file)
-                else:
-                    CURRENT_HOUR = initial_hour
-                    CURRENT_VPH = initial_vph
-                    print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
-                    print(f"     Random Time of day: {initial_hour:.1f}h, Traffic Flow: {initial_vph:.0f} cars/hour")
-            elif use_route_rotation and ep % 25 == 0:
-                print(f"\n  -- Route-Randomized Episode {ep+1}/{episodes} --")
+                # Route randomization: copy a random route file each episode
+                if use_route_rotation and ep > 0:
+                    chosen = random.choice(route_files)
+                    _shutil.copy(chosen, train_route_file)
+                    if ep % 25 == 0:
+                        print(f"     Route: {os.path.basename(chosen)}")
 
-            # Force SB3 to reset the environment state to load new routes
-            model._last_obs = None
+                if run_curriculum:
+                    if ep > 0:
+                        hour_of_day = random.uniform(0, 24)
+                        CURRENT_HOUR = hour_of_day
+                        vph = get_vph(hour_of_day, TOTAL_DAILY_CARS)
+                        CURRENT_VPH = vph
+                        vps = vph / 3600.0
 
+                        print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
+                        print(f"     Random Time of day: {hour_of_day:.1f}h, Traffic Flow: {vph:.0f} cars/hour")
+
+                        write_demand_xml([(0, num_seconds, vps)], net_file, tmp_trips, train_route_file)
+                    else:
+                        CURRENT_HOUR = initial_hour
+                        CURRENT_VPH = initial_vph
+                        print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
+                        print(f"     Random Time of day: {initial_hour:.1f}h, Traffic Flow: {initial_vph:.0f} cars/hour")
+                elif use_route_rotation and ep % 25 == 0:
+                    print(f"\n  -- Route-Randomized Episode {ep+1}/{episodes} --")
+
+                # Force SB3 to reset the environment state to load new routes
+                model._last_obs = None
+
+                model.learn(
+                    total_timesteps=STEPS_PER_EPISODE,
+                    callback=callbacks,
+                    reset_num_timesteps=False
+                )
+
+                # Explicit checkpoint save every N episodes (never overwrites)
+                if (ep + 1) % episodes_per_save == 0:
+                    ckpt_name = f"ppo_policy_{ep+1}ep"
+                    ckpt_path = os.path.join(checkpoint_dir, ckpt_name)
+                    model.save(ckpt_path)
+
+                    # Compute training stats for checkpoint metadata
+                    elapsed = time.time() - t_start
+                    recent_rewards = log_callback._step_rewards[-500:] if log_callback._step_rewards else [0]
+                    avg_step_reward = float(np.mean(recent_rewards))
+                    total_step_reward = float(np.sum(log_callback._step_rewards)) if log_callback._step_rewards else 0.0
+                    improvement_pct = (
+                        (avg_step_reward * STEPS_PER_EPISODE - abs(baseline_total_reward or 0))
+                        / abs(baseline_total_reward) * 100
+                        if baseline_total_reward and baseline_total_reward != 0 else None
+                    )
+
+                    ckpt_meta = {
+                        "episode": ep + 1,
+                        "total_episodes": episodes,
+                        "timesteps": model.num_timesteps,
+                        "elapsed_s": elapsed,
+                        "avg_step_reward_last500": avg_step_reward,
+                        "total_step_reward_sum": total_step_reward,
+                        "baseline_total_reward": baseline_total_reward,
+                        "estimated_improvement_pct": improvement_pct,
+                        "n_step_samples": len(log_callback._step_rewards),
+                    }
+                    meta_path = os.path.join(checkpoint_dir, f"{ckpt_name}.json")
+                    with open(meta_path, "w") as f:
+                        json.dump(ckpt_meta, f, indent=2)
+
+                    print(f"  [Checkpoint] {ckpt_name}.zip (ep {ep+1}/{episodes}, "
+                          f"avg_r={avg_step_reward:.2f}, {elapsed/60:.1f}min)")
+
+                if log_curriculum and run_curriculum:
+                    # We do exact 1-to-1 comparison by running the baseline and deterministic RL
+                    # model on the exact same randomized routing file we just generated.
+                    import subprocess, json, sys, tempfile
+
+                    h_val = hour_of_day if ep > 0 else initial_hour
+                    v_val = vph if ep > 0 else initial_vph
+
+                    tmp_json = os.path.join(tempfile.gettempdir(), "eval_out.json")
+
+                    # 1. Baseline in Subprocess (Safe for Libsumo)
+                    subprocess.run([sys.executable, "src/eval_helper.py", "baseline", net_file, train_route_file, str(num_seconds), tmp_json])
+                    with open(tmp_json, "r") as f:
+                        bl_r = json.load(f)
+                    bl_tot = sum(bl_r.values())
+
+                    # 2. RL Evaluation in Subprocess (Safe for Libsumo)
+                    tmp_model = os.path.join(run_dir, "tmp_eval_model")
+                    model.save(tmp_model)
+                    subprocess.run([sys.executable, "src/eval_helper.py", "evaluate", net_file, train_route_file, str(num_seconds), tmp_json, tmp_model+".zip", str(h_val)])
+                    with open(tmp_json, "r") as f:
+                        rl_r = json.load(f)
+                    rl_tot = sum(rl_r.values())
+
+                    impr = ((rl_tot - bl_tot) / abs(bl_tot) * 100) if bl_tot != 0 else 0
+
+                    log_line = f"Ep {ep+1:03d} | Hour {h_val:04.1f}h | Traffic {v_val:4.0f} vph | Baseline: {bl_tot:7.1f} | RL: {rl_tot:7.1f} | Impr: {impr:+5.1f}%"
+                    print(f"     [LOG] {log_line}")
+                    with open(os.path.join(run_dir, "curriculum_progress.txt"), "a", encoding="utf-8") as f:
+                        f.write(log_line + "\n")
+
+                if max_seconds and (time.time() - t_start) >= max_seconds:
+                    print("  Time limit reached during per-episode training.")
+                    break
+        else:
             model.learn(
-                total_timesteps=STEPS_PER_EPISODE,
+                total_timesteps=total_timesteps,
                 callback=callbacks,
-                reset_num_timesteps=False
+                reset_num_timesteps=False if resume_model_path else True,
             )
-
-            if log_curriculum and run_curriculum:
-                # We do exact 1-to-1 comparison by running the baseline and deterministic RL
-                # model on the exact same randomized routing file we just generated.
-                import subprocess, json, sys, tempfile
-
-                h_val = hour_of_day if ep > 0 else initial_hour
-                v_val = vph if ep > 0 else initial_vph
-
-                tmp_json = os.path.join(tempfile.gettempdir(), "eval_out.json")
-
-                # 1. Baseline in Subprocess (Safe for Libsumo)
-                subprocess.run([sys.executable, "src/eval_helper.py", "baseline", net_file, train_route_file, str(num_seconds), tmp_json])
-                with open(tmp_json, "r") as f:
-                    bl_r = json.load(f)
-                bl_tot = sum(bl_r.values())
-
-                # 2. RL Evaluation in Subprocess (Safe for Libsumo)
-                tmp_model = os.path.join(run_dir, "tmp_eval_model")
-                model.save(tmp_model)
-                subprocess.run([sys.executable, "src/eval_helper.py", "evaluate", net_file, train_route_file, str(num_seconds), tmp_json, tmp_model+".zip", str(h_val)])
-                with open(tmp_json, "r") as f:
-                    rl_r = json.load(f)
-                rl_tot = sum(rl_r.values())
-
-                impr = ((rl_tot - bl_tot) / abs(bl_tot) * 100) if bl_tot != 0 else 0
-
-                log_line = f"Ep {ep+1:03d} | Hour {h_val:04.1f}h | Traffic {v_val:4.0f} vph | Baseline: {bl_tot:7.1f} | RL: {rl_tot:7.1f} | Impr: {impr:+5.1f}%"
-                print(f"     [LOG] {log_line}")
-                with open(os.path.join(run_dir, "curriculum_progress.txt"), "a", encoding="utf-8") as f:
-                    f.write(log_line + "\n")
-
-            if max_seconds and (time.time() - t_start) >= max_seconds:
-                print("  Time limit reached during per-episode training.")
-                break
-    else:
-        model.learn(
-            total_timesteps=total_timesteps,
-            callback=callbacks,
-            reset_num_timesteps=False if resume_model_path else True,
-        )
+    except (KeyboardInterrupt, Exception) as e:
+        print(f"\n  [!] Training interrupted: {type(e).__name__}: {e}")
+        print(f"  [!] Saving emergency checkpoint...")
+    finally:
+        # ALWAYS save the model, even on crash/timeout/interrupt
+        emergency_path = os.path.join(checkpoint_dir, "ppo_model_latest")
+        try:
+            model.save(emergency_path)
+            print(f"  [Checkpoint] Latest model saved: {emergency_path}.zip")
+        except Exception as save_err:
+            print(f"  [!] Failed to save emergency checkpoint: {save_err}")
 
     train_time = time.time() - t_start
 
-    # Save model
+    # Save final model
     model_path = os.path.join(run_dir, "ppo_shared_policy")
     model.save(model_path)
     print(f"  Model saved: {model_path}.zip")
@@ -852,8 +932,8 @@ def main():
                         help="Override entropy coefficient (default from config.py: 0.05).")
     parser.add_argument("--entropy_annealing", action="store_true",
                         help="Linearly anneal entropy from ent_coef to 0.01 over training.")
-    parser.add_argument("--episodes_per_save", type=int, default=25,
-                        help="Save a model checkpoint every N episodes (default: 25).")
+    parser.add_argument("--episodes_per_save", type=int, default=10,
+                        help="Save a model checkpoint every N episodes (default: 10).")
     parser.add_argument("--scenario", type=str, default="uniform",
                         choices=list(SCENARIO_PRESETS.keys()),
                         help="Demand scenario. Sets route_file, num_seconds, and "
@@ -983,11 +1063,12 @@ def main():
 
     # Phase 2: Train
     print("\n[2/3] Training PPO agents...")
+    bl_total = sum(baseline_rewards.values())
     model, train_time = train_ppo(
         args.net_file, args.route_file, args.num_seconds,
         args.total_timesteps, run_dir, max_seconds, args.curriculum, args.log_curriculum, args.num_cpus, args.resume,
         entropy_annealing=args.entropy_annealing, episodes_per_save=args.episodes_per_save,
-        route_files=route_files,
+        route_files=route_files, baseline_total_reward=bl_total,
     )
     meta["train_time_s"] = train_time
     meta["actual_timesteps"] = model.num_timesteps
