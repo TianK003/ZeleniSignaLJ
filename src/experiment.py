@@ -326,11 +326,13 @@ class FlattenMultiAgentVecEnv(VecEnvWrapper):
     """
     def __init__(self, venv, num_agents):
         self.num_agents = num_agents
-        # Essential: Ensure the AI library knows it is receiving a flattened batch 
-        # of (num_cpus * num_agents) transitions every single step.
         v_envs = getattr(venv, 'num_envs', 1)
-        self.num_envs = v_envs * num_agents
+        # IMPORTANT: call super().__init__ FIRST, then override num_envs.
+        # VecEnvWrapper.__init__ -> VecEnv.__init__ sets self.num_envs = venv.num_envs,
+        # which would overwrite our multiplied value if we set it before.
         super().__init__(venv)
+        # Override num_envs AFTER parent init so PPO sees the flattened agent count.
+        self.num_envs = v_envs * num_agents
         # DummyVecEnv.observation_space is now (num_agents, obs_dim) after the
         # GymnasiumSubEnv fix. PPO needs to see (obs_dim,) per agent, so override.
         batched = venv.observation_space
@@ -852,7 +854,7 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                 if log_curriculum and run_curriculum:
                     # We do exact 1-to-1 comparison by running the baseline and deterministic RL
                     # model on the exact same randomized routing file we just generated.
-                    import subprocess, json, sys, tempfile
+                    import subprocess, json, tempfile
 
                     h_val = hour_of_day if ep > 0 else initial_hour
                     v_val = vph if ep > 0 else initial_vph
