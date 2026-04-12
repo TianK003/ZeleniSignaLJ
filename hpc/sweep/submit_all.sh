@@ -1,24 +1,145 @@
 #!/bin/bash
-# Zeleni SignaLJ - Submit all HPC jobs
-# Usage: bash hpc/submit_all.sh [filter]
-# Examples:
-#   bash hpc/submit_all.sh              # submit ALL jobs
-#   bash hpc/submit_all.sh pressure     # only pressure reward jobs
-#   bash hpc/submit_all.sh 100ep        # only 100-episode jobs
-#   bash hpc/submit_all.sh entanneal    # only entropy annealing jobs
-#   bash hpc/submit_all.sh curriculum   # only curriculum jobs
+# Submit route generation + training jobs with dependency chain
+set -e
+cd "$(git rev-parse --show-toplevel)"
+mkdir -p logs
 
+SKIP_ROUTES=false
 FILTER="${1:-}"
-COUNT=0
+if [ "$FILTER" = "--skip-routes" ]; then
+    SKIP_ROUTES=true; FILTER="${2:-}"; echo "Skipping route generation"
+fi
 
-for script in hpc/sweep/*.slurm; do
-    if [ -n "$FILTER" ] && [[ ! "$script" == *"$FILTER"* ]]; then
-        continue
-    fi
-    echo "Submitting: $script"
-    sbatch "$script"
-    COUNT=$((COUNT + 1))
-done
+DEP_FLAG=""
+if [ "$SKIP_ROUTES" = false ]; then
+    echo "Phase 1: Submitting route generation..."
+    ROUTE_JID=$(sbatch --parsable hpc/sweep/gen_train_routes.slurm)
+    echo "  Submitted gen_train_routes.slurm (job $ROUTE_JID)"
+    DEP_FLAG="--dependency=afterok:${ROUTE_JID}"
+fi
+
+echo "Phase 2: Submitting training jobs..."
+COUNT=0
+if [ -z "$FILTER" ] || echo "eveningrush_diffwaitingtime_lr1e3.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_diffwaitingtime_lr1e3.slurm)
+    echo "  Submitted eveningrush_diffwaitingtime_lr1e3.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_diffwaitingtime_lr1e3_entanneal.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_diffwaitingtime_lr1e3_entanneal.slurm)
+    echo "  Submitted eveningrush_diffwaitingtime_lr1e3_entanneal.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_diffwaitingtime_lr3e4.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_diffwaitingtime_lr3e4.slurm)
+    echo "  Submitted eveningrush_diffwaitingtime_lr3e4.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_diffwaitingtime_lr3e4_entanneal.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_diffwaitingtime_lr3e4_entanneal.slurm)
+    echo "  Submitted eveningrush_diffwaitingtime_lr3e4_entanneal.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_pressure_curriculum.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_pressure_curriculum.slurm)
+    echo "  Submitted eveningrush_pressure_curriculum.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr1e3.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_pressure_lr1e3.slurm)
+    echo "  Submitted eveningrush_pressure_lr1e3.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr1e3_entanneal.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_pressure_lr1e3_entanneal.slurm)
+    echo "  Submitted eveningrush_pressure_lr1e3_entanneal.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr3e4.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_pressure_lr3e4.slurm)
+    echo "  Submitted eveningrush_pressure_lr3e4.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr3e4_entanneal.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_pressure_lr3e4_entanneal.slurm)
+    echo "  Submitted eveningrush_pressure_lr3e4_entanneal.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_queue_curriculum.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_queue_curriculum.slurm)
+    echo "  Submitted eveningrush_queue_curriculum.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_queue_lr1e3.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_queue_lr1e3.slurm)
+    echo "  Submitted eveningrush_queue_lr1e3.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "eveningrush_queue_lr3e4.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_queue_lr3e4.slurm)
+    echo "  Submitted eveningrush_queue_lr3e4.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_diffwaitingtime_lr1e3.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_diffwaitingtime_lr1e3.slurm)
+    echo "  Submitted morningrush_diffwaitingtime_lr1e3.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_diffwaitingtime_lr1e3_entanneal.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_diffwaitingtime_lr1e3_entanneal.slurm)
+    echo "  Submitted morningrush_diffwaitingtime_lr1e3_entanneal.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_diffwaitingtime_lr3e4.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_diffwaitingtime_lr3e4.slurm)
+    echo "  Submitted morningrush_diffwaitingtime_lr3e4.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_diffwaitingtime_lr3e4_entanneal.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_diffwaitingtime_lr3e4_entanneal.slurm)
+    echo "  Submitted morningrush_diffwaitingtime_lr3e4_entanneal.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_pressure_curriculum.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_pressure_curriculum.slurm)
+    echo "  Submitted morningrush_pressure_curriculum.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_pressure_lr1e3.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_pressure_lr1e3.slurm)
+    echo "  Submitted morningrush_pressure_lr1e3.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_pressure_lr1e3_entanneal.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_pressure_lr1e3_entanneal.slurm)
+    echo "  Submitted morningrush_pressure_lr1e3_entanneal.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_pressure_lr3e4.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_pressure_lr3e4.slurm)
+    echo "  Submitted morningrush_pressure_lr3e4.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_pressure_lr3e4_entanneal.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_pressure_lr3e4_entanneal.slurm)
+    echo "  Submitted morningrush_pressure_lr3e4_entanneal.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_queue_curriculum.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_queue_curriculum.slurm)
+    echo "  Submitted morningrush_queue_curriculum.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_queue_lr1e3.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_queue_lr1e3.slurm)
+    echo "  Submitted morningrush_queue_lr1e3.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
+if [ -z "$FILTER" ] || echo "morningrush_queue_lr3e4.slurm" | grep -q "$FILTER"; then
+    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_queue_lr3e4.slurm)
+    echo "  Submitted morningrush_queue_lr3e4.slurm (job $JID)"
+    COUNT=$((COUNT+1))
+fi
 
 echo ""
-echo "Submitted $COUNT jobs. Monitor with: squeue -u \$USER"
+echo "Submitted $COUNT training jobs. Monitor: squeue -u $USER"

@@ -3,7 +3,7 @@
 #SBATCH --job-name=zs_eveningrush_pressure_lr1e3
 #SBATCH --output=logs/zs_eveningrush_pressure_lr1e3_%j.out
 #SBATCH --error=logs/zs_eveningrush_pressure_lr1e3_%j.err
-#SBATCH --time=16:00:00
+#SBATCH --time=24:00:00
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -14,6 +14,6 @@ source hpc/common.sh
 
 srun python src/experiment.py \
     --num_cpus 128 \
-    --episode_count 200 \
-    --scenario evening_rush --reward_fn pressure --learning_rate 0.001 \
-    --tag eveningrush_pressure_lr1e3_200ep
+    --episode_count 300 \
+    --scenario evening_rush --reward_fn pressure --learning_rate 0.001 --route_dir data/routes/train-evening \
+    --tag eveningrush_pressure_lr1e3_300ep
