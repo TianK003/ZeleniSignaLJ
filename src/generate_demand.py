@@ -104,12 +104,14 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
 
         tmp_dir = tempfile.gettempdir()
         tmp_trips = os.path.join(tmp_dir, f"trips_bin_{i}.trips.xml")
+        route_tmp = os.path.join(tmp_dir, f"routes_bin_{i}.rou.xml")
         all_trips_files.append(tmp_trips)
 
         cmd = [
             sys.executable, "-B", random_trips,
             "-n", net_file,
             "-o", tmp_trips,
+            "-r", route_tmp,
             "-b", str(int(begin)),
             "-e", str(int(end)),
             "-p", str(max(period, 0.5)),
@@ -119,6 +121,8 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
+        if os.path.exists(route_tmp):
+            os.remove(route_tmp)
         if result.returncode != 0:
             print(f"  WARNING: randomTrips failed for bin {i}: {result.stderr[:2000]}")
 
@@ -253,11 +257,15 @@ def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offse
         total += n_vehicles
 
         tmp = os.path.join(tmp_dir, f"trips_partial_{master_seed}_{seed_offset}_{i}.trips.xml")
+        # randomTrips.py auto-generates a route file; give it a unique path
+        # to avoid race conditions when multiple workers share the same CWD
+        route_tmp = os.path.join(tmp_dir, f"routes_partial_{master_seed}_{seed_offset}_{i}.rou.xml")
         all_tmp.append(tmp)
         cmd = [
             sys.executable, "-B", random_trips,
             "-n", net_file,
             "-o", tmp,
+            "-r", route_tmp,
             "-b", str(int(begin)),
             "-e", str(int(end)),
             "-p", str(period),
@@ -266,6 +274,9 @@ def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offse
             "--prefix", f"{id_prefix}{master_seed}_{seed_offset}_{i}_",
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
+        # Clean up the route file we don't need (we run duarouter separately)
+        if os.path.exists(route_tmp):
+            os.remove(route_tmp)
         if result.returncode != 0:
             print(f"  WARNING: randomTrips failed (bin {i}): {result.stderr[:2000]}")
 

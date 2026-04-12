@@ -19,6 +19,6 @@ echo "  Output: data/routes/rush-test-evening/"
 srun python src/generate_demand.py \
     --scenario evening_rush \
     --num_variants 50 \
-    --output_dir data/routes/rush-test-evening  --num_workers 10
+    --output_dir data/routes/rush-test-evening
 
 echo "Done. Route files in data/routes/rush-test-evening/"
