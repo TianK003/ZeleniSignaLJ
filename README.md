@@ -493,7 +493,7 @@ zeleni-signalj/
 ├── hpc/
 │   ├── common.sh             # Skupna HPC nastavitev (venv, SUMO_HOME)
 │   ├── traffic_rl.def        # Apptainer definicija vsebnika
-│   ├── sweep/                # Hiperparametrsko iskanje (48 SLURM skript)
+│   ├── sweep/                # Hiperparametrsko iskanje (44 SLURM skript)
 │   │   ├── generate_jobs.py  # Generator SLURM skript
 │   │   ├── submit_all.sh     # Oddaja z dvofaznim cevovodom (poti → učenje)
 │   │   ├── gen_train_routes.slurm  # Generiranje 100+100 ucnih poti (faza 1)
@@ -544,19 +544,19 @@ Prvo iskanje: 24 konfiguracij x 200 epizod na 128 CPE-jih. Modeli so se učili n
 
 ### Iskanje 2 (v teku): Učenje z naključnimi potmi
 
-48 SLURM skript v `hpc/sweep/`, generirane z `hpc/sweep/generate_jobs.py`. Vse uporabljajo `--route_dir` s 100 naključnimi prometnimi potmi na scenarij, da preprečijo preveliko prilagajanje na izvorno-ciljne pare (OD-pair overfitting).
+44 SLURM skript v `hpc/sweep/`, generirane z `hpc/sweep/generate_jobs.py`. Vse uporabljajo `--route_dir` s 50 naključnimi prometnimi potmi na scenarij, da preprečijo preveliko prilagajanje na izvorno-ciljne pare (OD-pair overfitting). S 300 epizodami in naključno izbiro vsaka pot dobi ~6 ponovitev — dovolj za utrjevanje vzorcev brez memorizacije posameznih poti.
 
 **Matrika eksperimentov:**
 - 3 nagradne funkcije: `queue`, `pressure`, `diff-waiting-time`
 - 3 hitrosti učenja: `3e-3`, `1e-3`, `3e-4`
 - 2 scenarija: `morning_rush`, `evening_rush`
 - Entropy annealing variante (vseh 18 kombinacij)
-- Iskanje entropijskega koeficienta (`ent_coef` = 0.02, 0.05, 0.1 za `pressure`)
+- Iskanje entropijskega koeficienta (`ent_coef` = 0.02, 0.1 za `pressure`, 0.05 je privzet in že v osnovnem iskanju)
 - 300 epizod, 24h časovna omejitev, 128 CPE-jev
 
 **Dvofazni cevovod:**
-1. `gen_train_routes.slurm` — generira 100 jutranjih + 100 večernih prometnih poti
-2. Vseh 48 učnih skript počaka na poti, nato teče vzporedno
+1. `gen_train_routes.slurm` — generira 50 jutranjih + 50 večernih prometnih poti
+2. Vseh 44 učnih skript počaka na poti, nato teče vzporedno
 
 **Kontrolne točke:** Vsako 10. epizodo se shrani `ppo_policy_10ep.zip`, `ppo_policy_20ep.zip` itd. z metapodatki (`.json`). Tudi ob prekinitvi se shrani `ppo_model_latest.zip`.
 

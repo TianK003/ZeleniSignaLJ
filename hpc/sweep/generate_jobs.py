@@ -13,7 +13,7 @@ LEARNING_RATES = [3e-3, 1e-3, 3e-4]
 ENT_COEFS = [0.02, 0.05, 0.1]
 SCENARIOS = ["morning_rush", "evening_rush"]
 EPISODES = 300
-NUM_ROUTE_VARIANTS = 100
+NUM_ROUTE_VARIANTS = 50
 
 # Route directories for route-randomized training
 ROUTE_DIRS = {
@@ -131,11 +131,12 @@ for scenario in SCENARIOS:
             args = f"--scenario {scenario} --reward_fn {reward} --learning_rate {lr} --entropy_annealing --route_dir {rd}"
             scripts.append(write_script(fname, job, args, tag))
 
-# ── Entropy coefficient sweep: 3 ent_coefs x best reward (pressure) x 2 LRs x 2 scenarios = 12 jobs ──
+# ── Entropy coefficient sweep: 2 ent_coefs x best reward (pressure) x 2 LRs x 2 scenarios = 8 jobs ──
+# (ent_coef=0.05 is the default, already covered by base sweep)
 for scenario in SCENARIOS:
     ss = scenario_str(scenario)
     rd = ROUTE_DIRS[scenario]
-    for ec in ENT_COEFS:
+    for ec in [e for e in ENT_COEFS if e != 0.05]:
         es = ent_str(ec)
         for lr in [1e-3, 3e-4]:  # two most promising LRs
             ls = lr_str(lr)

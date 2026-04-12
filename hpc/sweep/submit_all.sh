@@ -60,11 +60,6 @@ if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr1e3_ent002.slurm" | grep -q 
     echo "  Submitted eveningrush_pressure_lr1e3_ent002.slurm (job $JID)"
     COUNT=$((COUNT+1))
 fi
-if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr1e3_ent005.slurm" | grep -q "$FILTER"; then
-    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_pressure_lr1e3_ent005.slurm)
-    echo "  Submitted eveningrush_pressure_lr1e3_ent005.slurm (job $JID)"
-    COUNT=$((COUNT+1))
-fi
 if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr1e3_ent01.slurm" | grep -q "$FILTER"; then
     JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_pressure_lr1e3_ent01.slurm)
     echo "  Submitted eveningrush_pressure_lr1e3_ent01.slurm (job $JID)"
@@ -93,11 +88,6 @@ fi
 if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr3e4_ent002.slurm" | grep -q "$FILTER"; then
     JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_pressure_lr3e4_ent002.slurm)
     echo "  Submitted eveningrush_pressure_lr3e4_ent002.slurm (job $JID)"
-    COUNT=$((COUNT+1))
-fi
-if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr3e4_ent005.slurm" | grep -q "$FILTER"; then
-    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/eveningrush_pressure_lr3e4_ent005.slurm)
-    echo "  Submitted eveningrush_pressure_lr3e4_ent005.slurm (job $JID)"
     COUNT=$((COUNT+1))
 fi
 if [ -z "$FILTER" ] || echo "eveningrush_pressure_lr3e4_ent01.slurm" | grep -q "$FILTER"; then
@@ -180,11 +170,6 @@ if [ -z "$FILTER" ] || echo "morningrush_pressure_lr1e3_ent002.slurm" | grep -q 
     echo "  Submitted morningrush_pressure_lr1e3_ent002.slurm (job $JID)"
     COUNT=$((COUNT+1))
 fi
-if [ -z "$FILTER" ] || echo "morningrush_pressure_lr1e3_ent005.slurm" | grep -q "$FILTER"; then
-    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_pressure_lr1e3_ent005.slurm)
-    echo "  Submitted morningrush_pressure_lr1e3_ent005.slurm (job $JID)"
-    COUNT=$((COUNT+1))
-fi
 if [ -z "$FILTER" ] || echo "morningrush_pressure_lr1e3_ent01.slurm" | grep -q "$FILTER"; then
     JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_pressure_lr1e3_ent01.slurm)
     echo "  Submitted morningrush_pressure_lr1e3_ent01.slurm (job $JID)"
@@ -213,11 +198,6 @@ fi
 if [ -z "$FILTER" ] || echo "morningrush_pressure_lr3e4_ent002.slurm" | grep -q "$FILTER"; then
     JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_pressure_lr3e4_ent002.slurm)
     echo "  Submitted morningrush_pressure_lr3e4_ent002.slurm (job $JID)"
-    COUNT=$((COUNT+1))
-fi
-if [ -z "$FILTER" ] || echo "morningrush_pressure_lr3e4_ent005.slurm" | grep -q "$FILTER"; then
-    JID=$(sbatch --parsable $DEP_FLAG hpc/sweep/morningrush_pressure_lr3e4_ent005.slurm)
-    echo "  Submitted morningrush_pressure_lr3e4_ent005.slurm (job $JID)"
     COUNT=$((COUNT+1))
 fi
 if [ -z "$FILTER" ] || echo "morningrush_pressure_lr3e4_ent01.slurm" | grep -q "$FILTER"; then

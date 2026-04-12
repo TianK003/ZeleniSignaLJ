@@ -12,16 +12,16 @@
 
 source hpc/common.sh
 
-echo "Generating 100 morning_rush route variants..."
+echo "Generating 50 morning_rush route variants..."
 srun python src/generate_demand.py \
     --scenario morning_rush \
-    --num_variants 100 \
+    --num_variants 50 \
     --output_dir data/routes/train-morning
 
-echo "Generating 100 evening_rush route variants..."
+echo "Generating 50 evening_rush route variants..."
 srun python src/generate_demand.py \
     --scenario evening_rush \
-    --num_variants 100 \
+    --num_variants 50 \
     --output_dir data/routes/train-evening
 
 echo "Done. Route variants generated."
