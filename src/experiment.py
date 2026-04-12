@@ -854,7 +854,7 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                 if log_curriculum and run_curriculum:
                     # We do exact 1-to-1 comparison by running the baseline and deterministic RL
                     # model on the exact same randomized routing file we just generated.
-                    import subprocess, json, tempfile
+                    import subprocess, tempfile
 
                     h_val = hour_of_day if ep > 0 else initial_hour
                     v_val = vph if ep > 0 else initial_vph
@@ -1016,8 +1016,8 @@ def main():
                         help="Override entropy coefficient (default from config.py: 0.05).")
     parser.add_argument("--entropy_annealing", action="store_true",
                         help="Linearly anneal entropy from ent_coef to 0.01 over training.")
-    parser.add_argument("--episodes_per_save", type=int, default=5,
-                        help="Save a model checkpoint every N episodes (default: 5). "
+    parser.add_argument("--episodes_per_save", type=int, default=50,
+                        help="Save a model checkpoint every N episodes (default: 50). "
                              "With --num_cpus, this is measured in equivalent episodes "
                              "(PPO updates * num_cpus).")
     parser.add_argument("--scenario", type=str, default="uniform",
