@@ -107,7 +107,7 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
         all_trips_files.append(tmp_trips)
 
         cmd = [
-            sys.executable, random_trips,
+            sys.executable, "-B", random_trips,
             "-n", net_file,
             "-o", tmp_trips,
             "-b", str(int(begin)),
@@ -120,7 +120,7 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"  WARNING: randomTrips failed for bin {i}: {result.stderr[:200]}")
+            print(f"  WARNING: randomTrips failed for bin {i}: {result.stderr[:2000]}")
 
     print(f"\n  Total vehicles: {total_vehicles}")
 
@@ -255,7 +255,7 @@ def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offse
         tmp = os.path.join(tmp_dir, f"trips_partial_{master_seed}_{seed_offset}_{i}.trips.xml")
         all_tmp.append(tmp)
         cmd = [
-            sys.executable, random_trips,
+            sys.executable, "-B", random_trips,
             "-n", net_file,
             "-o", tmp,
             "-b", str(int(begin)),
@@ -267,7 +267,7 @@ def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offse
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"  WARNING: randomTrips failed (bin {i}): {result.stderr[:200]}")
+            print(f"  WARNING: randomTrips failed (bin {i}): {result.stderr[:2000]}")
 
     # Merge into output_trips
     with open(output_trips, "w") as out:
