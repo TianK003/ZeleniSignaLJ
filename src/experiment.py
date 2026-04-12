@@ -425,7 +425,8 @@ def make_env_factory(net_file, route_file, num_seconds, route_dir=None):
         actual_route = route_file
         if route_dir:
             import glob as _g
-            files = sorted(_g.glob(os.path.join(route_dir, "*.rou.xml")))
+            files = sorted(f for f in _g.glob(os.path.join(route_dir, "*.rou.xml"))
+                           if "_worker" not in f and "_train" not in f)
             if files:
                 # Each subprocess reads a different original file directly (no copy).
                 # Use PID for selection — guarantees diversity even with forked random state.
@@ -1078,7 +1079,8 @@ def main():
     import glob as _glob
     route_files = None
     if args.route_dir:
-        route_files = sorted(_glob.glob(os.path.join(args.route_dir, "*.rou.xml")))
+        route_files = sorted(f for f in _glob.glob(os.path.join(args.route_dir, "*.rou.xml"))
+                             if "_worker" not in f and "_train" not in f)
         if not route_files:
             print(f"\n  ERROR: No .rou.xml files found in {args.route_dir}")
             print(f"  Generate with: python src/generate_demand.py "
