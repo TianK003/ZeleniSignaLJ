@@ -12,7 +12,8 @@ REWARD_FNS = ["queue", "pressure", "diff-waiting-time"]
 LEARNING_RATES = [3e-3, 1e-3, 3e-4]
 ENT_COEFS = [0.02, 0.05, 0.1]
 SCENARIOS = ["morning_rush", "evening_rush"]
-EPISODES = 300
+NUM_CPUS = 16
+EPISODES = 2400
 NUM_ROUTE_VARIANTS = 50
 
 # Route directories for route-randomized training
@@ -38,22 +39,23 @@ def scenario_str(s):
 
 def write_script(filename, job_name, extra_args, tag):
     path = os.path.join(HPC_DIR, filename)
+    mem_gb = max(16, NUM_CPUS * 1)  # ~1GB per SUMO instance
     content = f"""#!/bin/bash
 # Zeleni SignaLJ - {job_name}
 #SBATCH --job-name={job_name}
 #SBATCH --output=logs/{job_name}_%j.out
 #SBATCH --error=logs/{job_name}_%j.err
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=128
-#SBATCH --mem=96G
+#SBATCH --cpus-per-task={NUM_CPUS}
+#SBATCH --mem={mem_gb}G
 
 source hpc/common.sh
 
 srun python src/experiment.py \\
-    --num_cpus 128 \\
+    --num_cpus {NUM_CPUS} \\
     --episode_count {EPISODES} \\
     {extra_args} \\
     --tag {tag}
