@@ -256,6 +256,7 @@ class TrainingLogCallback(BaseCallback):
             print(f"    Step {self.num_timesteps}: "
                   f"{label}, ~{n_eps} episodes, "
                   f"{sps:.0f} steps/s, {elapsed/60:.1f}min")
+            sys.stdout.flush()
         return True
 
     def _on_training_end(self):
@@ -308,6 +309,7 @@ class ExplicitCheckpointCallback(BaseCallback):
             with open(os.path.join(self.save_path, f"{name}.json"), "w") as f:
                 json.dump(meta, f, indent=2)
             print(f"  [Checkpoint] {name}.zip ({self.num_timesteps} steps, avg_r={avg_r:.2f})")
+            sys.stdout.flush()
         return True
 
 
@@ -412,14 +414,27 @@ class GymnasiumSubEnv(gym.Env):
     def close(self):
         self.venv.close()
 
-def make_env_factory(net_file, route_file, num_seconds):
+def make_env_factory(net_file, route_file, num_seconds, route_dir=None):
     """
     Delays the SUMO instantiations so 'libsumo' only boots up INSIDE the child CPU nodes!
+    If route_dir is provided, each subprocess picks its own random route file for diversity.
     """
     def _init():
+        actual_route = route_file
+        if route_dir:
+            import glob as _g
+            files = sorted(_g.glob(os.path.join(route_dir, "*.rou.xml")))
+            if files:
+                chosen = random.choice(files)
+                # Each subprocess gets its own copy (keyed by PID to avoid collisions)
+                local_route = route_file.replace(".rou.xml", f"_worker{os.getpid()}.rou.xml")
+                import shutil
+                shutil.copy(chosen, local_route)
+                actual_route = local_route
+
         env = sumo_rl.parallel_env(
             net_file=net_file,
-            route_file=route_file,
+            route_file=actual_route,
             use_gui=False,
             num_seconds=num_seconds,
             reward_fn=ACTIVE_REWARD_FN,
@@ -434,7 +449,7 @@ def make_env_factory(net_file, route_file, num_seconds):
         if not hasattr(env.unwrapped, "render_mode"):
             env.unwrapped.render_mode = None
         env.unwrapped.warmup_seconds = WARMUP_SECONDS
-        
+
         env = AgentFilterWrapper(
             env, target_agents=TS_IDS, net_file=net_file, default_action=0
         )
@@ -444,15 +459,15 @@ def make_env_factory(net_file, route_file, num_seconds):
         return GymnasiumSubEnv(env)
     return _init
 
-def build_vectorized_env(net_file, route_file, num_seconds, num_cpus):
-    factories = [make_env_factory(net_file, route_file, num_seconds) for _ in range(num_cpus)]
+def build_vectorized_env(net_file, route_file, num_seconds, num_cpus, route_dir=None):
+    factories = [make_env_factory(net_file, route_file, num_seconds, route_dir) for _ in range(num_cpus)]
     if num_cpus > 1:
         # Multiprocessing across CPU nodes safely
         base_env = SubprocVecEnv(factories)
     else:
         # Single process (local testing)
         base_env = DummyVecEnv(factories)
-    
+
     # Flatten the matrices so SB3 PPO accepts it cleanly
     flat_env = FlattenMultiAgentVecEnv(base_env, num_agents=NUM_AGENTS)
     return flat_env
@@ -596,8 +611,13 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
             import shutil
             initial_route = random.choice(route_files)
             shutil.copy(initial_route, train_route_file)
+            route_dir = os.path.dirname(route_files[0])
             print(f"  [Route randomization] {len(route_files)} route files available")
             print(f"  Initial route: {os.path.basename(initial_route)}")
+            if num_cpus > 1:
+                print(f"  Per-subprocess diversity: each of {num_cpus} workers picks its own route file")
+        else:
+            route_dir = None
 
         if run_curriculum:
             print("  [Setup] Generating initial training demand slice for the environment...")
@@ -606,15 +626,36 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
             write_demand_xml([(0, num_seconds, initial_vph/3600.0)], net_file, tmp_trips, train_route_file)
 
         print(f"  Creating vectorized training environment on {num_cpus} CPUs...")
-        env = build_vectorized_env(net_file, train_route_file, num_seconds, num_cpus)
+        # Pass route_dir so each subprocess can independently pick a route file
+        env = build_vectorized_env(net_file, train_route_file, num_seconds, num_cpus,
+                                   route_dir=route_dir if not run_curriculum else None)
     else:
         print(f"  Creating vectorized training environment on {num_cpus} CPUs...")
         env = build_vectorized_env(net_file, route_file, num_seconds, num_cpus)
 
+    # Scale BATCH_SIZE to maintain ~20 mini-batches per epoch regardless of num_cpus.
+    # With num_cpus=1: buffer = 720*5 = 3600, batch=180, 20 mini-batches/epoch.
+    # With num_cpus=128: buffer = 720*640 = 460800, batch=180*128=23040, still 20 mini-batches/epoch.
+    buffer_size = N_STEPS * env.num_envs
+    actual_batch_size = min(BATCH_SIZE * num_cpus, buffer_size)
+    # Ensure buffer_size is divisible by actual_batch_size (SB3 requirement)
+    while buffer_size % actual_batch_size != 0 and actual_batch_size > BATCH_SIZE:
+        actual_batch_size -= BATCH_SIZE
+    if buffer_size % actual_batch_size != 0:
+        actual_batch_size = BATCH_SIZE  # fallback to unscaled
+
+    # Compute actual steps_per_episode from scenario duration (not hardcoded RL_SECONDS=3600)
+    rl_seconds = num_seconds - WARMUP_SECONDS
+    actual_steps_per_episode = (rl_seconds // DELTA_TIME) * NUM_AGENTS
+
     print(f"  Observation space: {env.observation_space}")
     print(f"  Action space: {env.action_space}")
-    print(f"  Target Training: {total_timesteps:,} transitions ({total_timesteps // STEPS_PER_EPISODE} episodes)")
     print(f"  Parallelization: {env.num_envs} active agents ({num_cpus} CPUs x {NUM_AGENTS} agents)")
+    print(f"  Rollout buffer: {buffer_size:,} transitions ({N_STEPS} steps x {env.num_envs} envs)")
+    print(f"  Batch size: {actual_batch_size} (scaled from {BATCH_SIZE} for {num_cpus} CPUs, "
+          f"{buffer_size // actual_batch_size} mini-batches/epoch)")
+    print(f"  Steps per SUMO episode: {actual_steps_per_episode} "
+          f"({rl_seconds}s RL / {DELTA_TIME}s delta x {NUM_AGENTS} agents)")
 
     # All hyperparameters from src/config.py — single source of truth
     if resume_model_path:
@@ -625,7 +666,7 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
             custom_objects={
                 "learning_rate": ACTIVE_LEARNING_RATE,
                 "n_steps": N_STEPS,
-                "batch_size": BATCH_SIZE,
+                "batch_size": actual_batch_size,
                 "n_epochs": N_EPOCHS,
                 "gamma": GAMMA,
                 "gae_lambda": GAE_LAMBDA,
@@ -640,7 +681,7 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
             env,
             learning_rate=ACTIVE_LEARNING_RATE,
             n_steps=N_STEPS,
-            batch_size=BATCH_SIZE,
+            batch_size=actual_batch_size,
             n_epochs=N_EPOCHS,
             gamma=GAMMA,
             gae_lambda=GAE_LAMBDA,
@@ -650,10 +691,10 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
             tensorboard_log=os.path.join(run_dir, "tb_logs"),
         )
 
-    # Training Log callback
+    # Training Log callback (use actual scenario duration, not hardcoded STEPS_PER_EPISODE)
     log_path = os.path.join(run_dir, "training_log.csv")
     log_callback = TrainingLogCallback(log_path, print_freq=5000,
-                                       steps_per_episode=STEPS_PER_EPISODE)
+                                       steps_per_episode=actual_steps_per_episode)
     callbacks = [log_callback]
 
     # Checkpoint directory for explicit saves
@@ -683,6 +724,10 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
 
     t_start = time.time()
 
+    # One rollout = N_STEPS env steps across all parallel envs.
+    # With num_cpus=128: 720 * 640 = 460,800 transitions per PPO update.
+    rollout_timesteps = N_STEPS * env.num_envs
+
     # Wrap training in try/finally so the model is ALWAYS saved, even on crash/timeout
     try:
         if run_curriculum or use_route_rotation:
@@ -693,20 +738,24 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
             if use_route_rotation:
                 desc_parts.append(f"Route randomization ({len(route_files)} files)")
             print(f"\n  [{' + '.join(desc_parts)}] Per-episode training loop...")
-            episodes = total_timesteps // STEPS_PER_EPISODE
-            if episodes == 0: episodes = 1
 
-            for ep in range(episodes):
+            # Each PPO update collects experience from num_cpus parallel SUMO
+            # instances. With --episode_count 300 and --num_cpus 128, we need
+            # ceil(300/128) = 3 PPO updates, not 300.
+            requested_episodes = total_timesteps // actual_steps_per_episode
+            if requested_episodes == 0: requested_episodes = 1
+            episodes_per_update = max(1, num_cpus)
+            ppo_updates = max(1, -(-requested_episodes // episodes_per_update))  # ceil division
+
+            print(f"  Requested episodes: {requested_episodes}")
+            print(f"  Episodes per PPO update: {episodes_per_update} ({num_cpus} CPUs)")
+            print(f"  PPO updates to perform: {ppo_updates}")
+
+            for ep in range(ppo_updates):
                 global CURRENT_HOUR, CURRENT_VPH
 
-                # Route randomization: copy a random route file each episode
-                if use_route_rotation and ep > 0:
-                    chosen = random.choice(route_files)
-                    _shutil.copy(chosen, train_route_file)
-                    if ep % 25 == 0:
-                        print(f"     Route: {os.path.basename(chosen)}")
-
                 if run_curriculum:
+                    # Curriculum: generate new demand each iteration, force env reset
                     if ep > 0:
                         hour_of_day = random.uniform(0, 24)
                         CURRENT_HOUR = hour_of_day
@@ -714,30 +763,54 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                         CURRENT_VPH = vph
                         vps = vph / 3600.0
 
-                        print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
+                        print(f"\n  -- Curriculum PPO Update {ep+1}/{ppo_updates} "
+                              f"(~episodes {ep*episodes_per_update+1}-{min((ep+1)*episodes_per_update, requested_episodes)}) --")
                         print(f"     Random Time of day: {hour_of_day:.1f}h, Traffic Flow: {vph:.0f} cars/hour")
 
                         write_demand_xml([(0, num_seconds, vps)], net_file, tmp_trips, train_route_file)
                     else:
                         CURRENT_HOUR = initial_hour
                         CURRENT_VPH = initial_vph
-                        print(f"\n  -- Curriculum Episode {ep+1}/{episodes} --")
+                        print(f"\n  -- Curriculum PPO Update {ep+1}/{ppo_updates} "
+                              f"(~episodes 1-{min(episodes_per_update, requested_episodes)}) --")
                         print(f"     Random Time of day: {initial_hour:.1f}h, Traffic Flow: {initial_vph:.0f} cars/hour")
-                elif use_route_rotation and ep % 25 == 0:
-                    print(f"\n  -- Route-Randomized Episode {ep+1}/{episodes} --")
 
-                # Force SB3 to reset the environment state to load new routes
-                model._last_obs = None
+                    # Curriculum needs env reset to load new demand files
+                    model._last_obs = None
+
+                    if use_route_rotation and ep > 0:
+                        chosen = random.choice(route_files)
+                        _shutil.copy(chosen, train_route_file)
+                        print(f"     Route: {os.path.basename(chosen)}")
+                else:
+                    # Pure route-rotation (no curriculum): DON'T force env reset.
+                    # Let SUMO episodes play out fully across multiple rollouts so
+                    # the agent sees the entire rush-hour period, not just the first 25%.
+                    # Route diversity comes from per-subprocess selection (fix 5).
+                    if ep % 25 == 0:
+                        print(f"\n  -- Route-Randomized PPO Update {ep+1}/{ppo_updates} "
+                              f"(~episodes {ep*episodes_per_update+1}-{min((ep+1)*episodes_per_update, requested_episodes)}) --")
 
                 model.learn(
-                    total_timesteps=STEPS_PER_EPISODE,
+                    total_timesteps=rollout_timesteps,
                     callback=callbacks,
                     reset_num_timesteps=False
                 )
 
-                # Explicit checkpoint save every N episodes (never overwrites)
-                if (ep + 1) % episodes_per_save == 0:
-                    ckpt_name = f"ppo_policy_{ep+1}ep"
+                # Checkpoint save logic:
+                # Convert episodes_per_save to PPO-update interval.
+                # If there are few PPO updates (e.g., 3 with 128 CPUs), save EVERY update.
+                equiv_episodes = min((ep + 1) * episodes_per_update, requested_episodes)
+                # How many equivalent episodes pass per PPO update?
+                # Save when accumulated equivalent episodes cross an episodes_per_save boundary.
+                prev_equiv = min(ep * episodes_per_update, requested_episodes) if ep > 0 else 0
+                crossed_boundary = (equiv_episodes // episodes_per_save) > (prev_equiv // episodes_per_save)
+                is_last = (ep == ppo_updates - 1)
+                # Always save if <= 10 total PPO updates (fast training, every checkpoint matters)
+                few_updates = (ppo_updates <= 10)
+
+                if crossed_boundary or is_last or few_updates:
+                    ckpt_name = f"ppo_policy_{equiv_episodes}ep"
                     ckpt_path = os.path.join(checkpoint_dir, ckpt_name)
                     model.save(ckpt_path)
 
@@ -747,14 +820,17 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                     avg_step_reward = float(np.mean(recent_rewards))
                     total_step_reward = float(np.sum(log_callback._step_rewards)) if log_callback._step_rewards else 0.0
                     improvement_pct = (
-                        (avg_step_reward * STEPS_PER_EPISODE - abs(baseline_total_reward or 0))
+                        (avg_step_reward * actual_steps_per_episode - abs(baseline_total_reward or 0))
                         / abs(baseline_total_reward) * 100
                         if baseline_total_reward and baseline_total_reward != 0 else None
                     )
 
                     ckpt_meta = {
-                        "episode": ep + 1,
-                        "total_episodes": episodes,
+                        "ppo_update": ep + 1,
+                        "total_ppo_updates": ppo_updates,
+                        "equivalent_episodes": equiv_episodes,
+                        "requested_episodes": requested_episodes,
+                        "num_cpus": num_cpus,
                         "timesteps": model.num_timesteps,
                         "elapsed_s": elapsed,
                         "avg_step_reward_last500": avg_step_reward,
@@ -767,8 +843,11 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
                     with open(meta_path, "w") as f:
                         json.dump(ckpt_meta, f, indent=2)
 
-                    print(f"  [Checkpoint] {ckpt_name}.zip (ep {ep+1}/{episodes}, "
-                          f"avg_r={avg_step_reward:.2f}, {elapsed/60:.1f}min)")
+                    msg = (f"  [Checkpoint] {ckpt_name}.zip (update {ep+1}/{ppo_updates}, "
+                           f"~{equiv_episodes} episodes, "
+                           f"avg_r={avg_step_reward:.2f}, {elapsed/60:.1f}min)")
+                    print(msg)
+                    sys.stdout.flush()  # Force flush even without PYTHONUNBUFFERED
 
                 if log_curriculum and run_curriculum:
                     # We do exact 1-to-1 comparison by running the baseline and deterministic RL
@@ -813,12 +892,14 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     except (KeyboardInterrupt, Exception) as e:
         print(f"\n  [!] Training interrupted: {type(e).__name__}: {e}")
         print(f"  [!] Saving emergency checkpoint...")
+        sys.stdout.flush()
     finally:
         # ALWAYS save the model, even on crash/timeout/interrupt
         emergency_path = os.path.join(checkpoint_dir, "ppo_model_latest")
         try:
             model.save(emergency_path)
             print(f"  [Checkpoint] Latest model saved: {emergency_path}.zip")
+            sys.stdout.flush()
         except Exception as save_err:
             print(f"  [!] Failed to save emergency checkpoint: {save_err}")
 
@@ -830,6 +911,7 @@ def train_ppo(net_file, route_file, num_seconds, total_timesteps, run_dir,
     print(f"  Model saved: {model_path}.zip")
     print(f"  Training time: {train_time/60:.1f}min "
           f"({model.num_timesteps} actual steps)")
+    sys.stdout.flush()
 
     env.close()
     return model, train_time
@@ -932,8 +1014,10 @@ def main():
                         help="Override entropy coefficient (default from config.py: 0.05).")
     parser.add_argument("--entropy_annealing", action="store_true",
                         help="Linearly anneal entropy from ent_coef to 0.01 over training.")
-    parser.add_argument("--episodes_per_save", type=int, default=10,
-                        help="Save a model checkpoint every N episodes (default: 10).")
+    parser.add_argument("--episodes_per_save", type=int, default=5,
+                        help="Save a model checkpoint every N episodes (default: 5). "
+                             "With --num_cpus, this is measured in equivalent episodes "
+                             "(PPO updates * num_cpus).")
     parser.add_argument("--scenario", type=str, default="uniform",
                         choices=list(SCENARIO_PRESETS.keys()),
                         help="Demand scenario. Sets route_file, num_seconds, and "
@@ -976,12 +1060,18 @@ def main():
         return
 
     # Convert episode_count to timesteps if provided
-    # 1 episode = NUM_SECONDS / DELTA_TIME * NUM_AGENTS = 3600 SB3 timesteps
+    # Compute actual steps_per_episode from scenario duration (not hardcoded RL_SECONDS)
+    rl_secs = args.num_seconds - WARMUP_SECONDS
+    actual_spe = (rl_secs // DELTA_TIME) * NUM_AGENTS
     if args.episode_count is not None:
-        args.total_timesteps = args.episode_count * STEPS_PER_EPISODE
+        args.total_timesteps = args.episode_count * actual_spe
         print(f"  Episode count: {args.episode_count} episodes "
               f"= {args.total_timesteps} timesteps "
-              f"({STEPS_PER_EPISODE} per episode)")
+              f"({actual_spe} per episode, {rl_secs}s RL)")
+        if args.num_cpus > 1:
+            ppo_upd = max(1, -(-args.episode_count // args.num_cpus))
+            print(f"  With {args.num_cpus} CPUs: {ppo_upd} PPO updates "
+                  f"({args.num_cpus} parallel episodes per update)")
     elif args.total_timesteps is None:
         args.total_timesteps = 100_000  # default
 
@@ -1023,8 +1113,11 @@ def main():
         "reward_fn": ACTIVE_REWARD_FN,
         "approach": "PPO with parameter sharing (SuperSuit vec env)",
         "entropy_annealing": args.entropy_annealing,
+        "num_cpus": args.num_cpus,
         "hyperparams": {
-            "lr": ACTIVE_LEARNING_RATE, "n_steps": N_STEPS, "batch_size": BATCH_SIZE,
+            "lr": ACTIVE_LEARNING_RATE, "n_steps": N_STEPS,
+            "batch_size_base": BATCH_SIZE,
+            "batch_size_note": f"Scaled to BATCH_SIZE*num_cpus at runtime (see training log)",
             "n_epochs": N_EPOCHS, "gamma": GAMMA, "gae_lambda": GAE_LAMBDA,
             "ent_coef": ACTIVE_ENT_COEF, "clip_range": CLIP_RANGE,
             "delta_time": DELTA_TIME, "yellow_time": YELLOW_TIME,

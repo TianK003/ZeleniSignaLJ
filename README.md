@@ -165,18 +165,18 @@ python src/experiment.py --compare_only
 
 | Zastavica | Opis |
 |-----------|------|
-| `--episode_count N` | Število polnih epizod (1 epizoda = 3600 SB3 korakov) |
+| `--episode_count N` | Število polnih epizod (avtomatsko prilagojeno za scenarij in vzporednost) |
 | `--total_timesteps N` | Surovo število SB3 korakov |
 | `--max_hours H` | Zaustavitev po H urah (stenski čas) |
 | `--scenario` | `uniform` / `morning_rush` / `evening_rush` / `offpeak` |
-| `--route_dir DIR` | Mapa z več `.rou.xml` datotekami — vsaka epizoda uporabi naključno pot |
+| `--route_dir DIR` | Mapa z več `.rou.xml` datotekami — vsaka podprocesna SUMO instanca dobi svojo naključno pot |
 | `--reward_fn` | `queue` / `pressure` / `diff-waiting-time` / `average-speed` |
 | `--learning_rate F` | Hitrost učenja (privzeto: 1e-3) |
 | `--ent_coef F` | Entropijski koeficient (privzeto: 0.05) |
 | `--entropy_annealing` | Linearno zmanjšanje entropije od ent_coef do 0.01 |
 | `--episodes_per_save N` | Kontrolna točka vsako N epizod (privzeto: 10) |
 | `--curriculum` | Naključni urni rezini 24h krivulje |
-| `--num_cpus N` | Vzporedni SUMO procesi (za HPC) |
+| `--num_cpus N` | Vzporedni SUMO procesi (za HPC). Z N CPE se izvedejo N vzporednih epizod na PPO posodobitev; `batch_size` se avtomatsko skalira na `180*N` za ohranjanje ~20 mini-serij na epoho. |
 | `--resume PATH` | Nadaljevanje iz obstoječe kontrolne točke |
 | `--tag OZNAKA` | Oznaka eksperimenta (za identifikacijo) |
 
@@ -339,8 +339,8 @@ mode = ctrl.get_mode(hour=7.5)   # -> "rl_morning"
 | Parameter | Vrednost | Opis |
 |-----------|----------|------|
 | `learning_rate` | 0.001 | Korak gradientnega posodabljanja |
-| `n_steps` | 720 | Korakov na agenta pred PPO posodobitvijo (= 1 celotna epizoda) |
-| `batch_size` | 180 | Velikost mini-serije za gradient (3600 / 180 = 20 serij) |
+| `n_steps` | 720 | Korakov na okolje pred PPO posodobitvijo |
+| `batch_size` | 180 (osnova) | Avtomatsko skalirano: `180 * num_cpus` za ohranjanje ~20 mini-serij na epoho |
 | `n_epochs` | 10 | Število prehodov čez zbiralnik na posodobitev |
 | `gamma` | 0.99 | Diskontni faktor (0=kratkovidno, 1=neskončen horizont) |
 | `gae_lambda` | 0.95 | GAE glajenje med pristranskostjo in varianco |
@@ -358,18 +358,28 @@ Model vsako epizodo vidi drugačen scenarij in se tako nauči splošnih pravil z
 En "korak" (timestep) v SB3 = 5 sekund simuliranega prometa za 1 semafor. Ker je 5 semaforjev vektoriziranih prek SuperSuit, SB3 prišteje 5 korakov na vsak SUMO korak.
 
 ```
-1 epizoda = num_seconds / delta_time * num_agents
-         = 3600 / 5 * 5 = 3600 SB3 korakov
+1 epizoda (uniform, 1h) = rl_seconds / delta_time * num_agents
+                        = 3600 / 5 * 5 = 3600 SB3 korakov
 
-n_steps = 720 → 720 * 5 agentov = 3600 korakov = točno 1 epizoda na PPO posodobitev
+1 epizoda (morning_rush, 4h) = 14400 / 5 * 5 = 14400 SB3 korakov
+
+n_steps = 720 → 720 * 5 agentov = 3600 korakov na zbiralnik (pri 1 CPE)
 ```
 
-| `--episode_count` | SB3 koraki | Polnih epizod | PPO posodobitev |
-|-------------------|------------|---------------|-----------------|
-| 10 | 36.000 | 10 | 10 |
-| 50 | 180.000 | 50 | 50 |
-| 100 | 360.000 | 100 | 100 |
-| 500 | 1.800.000 | 500 | 500 |
+### Vzporednost (--num_cpus)
+
+Z `--num_cpus N` se ustvari N neodvisnih SUMO simulacij (`SubprocVecEnv`). Vsaka ima 5 agentov, skupaj N*5 agentov. PPO zbira `n_steps=720` korakov iz vseh vzporednih okolij hkrati, kar daje `720 * N * 5` prehodov na PPO posodobitev.
+
+`batch_size` se avtomatsko skalira na `180 * N`, da ohranja ~20 mini-serij na epoho (enak razmerji kot pri 1 CPE).
+
+`--episode_count` se pretvori v PPO posodobitve: `ceil(episode_count / num_cpus)`, ker vsaka posodobitev zbere izkušnje iz N vzporednih epizod.
+
+| `--episode_count` | `--num_cpus` | PPO posodobitev | Vzporednih epizod |
+|-------------------|--------------|------------------|--------------------|
+| 50 | 1 | 50 | 50 |
+| 50 | 4 | 13 | 52 |
+| 300 | 128 | 3 | 384 |
+| 500 | 128 | 4 | 512 |
 
 ## Arhitektura cevovoda
 
@@ -553,12 +563,15 @@ Prvo iskanje: 24 konfiguracij x 200 epizod na 128 CPE-jih. Modeli so se učili n
 - Entropy annealing variante (vseh 18 kombinacij)
 - Iskanje entropijskega koeficienta (`ent_coef` = 0.02, 0.1 za `pressure`, 0.05 je privzet in že v osnovnem iskanju)
 - 300 epizod, 24h časovna omejitev, 128 CPE-jev
+- `batch_size` avtomatsko skaliran na `180*128 = 23.040` (ohranja 20 mini-serij na epoho)
+- PPO posodobitve: `ceil(300/128) = 3` posodobitve, vsaka zbere 128 vzporednih epizod
+- Vsaka podprocesna SUMO instanca dobi svojo naključno pot iz `--route_dir` (raznolikost znotraj zbiralnika)
 
 **Dvofazni cevovod:**
 1. `gen_train_routes.slurm` — generira 50 jutranjih + 50 večernih prometnih poti
 2. Vseh 44 učnih skript počaka na poti, nato teče vzporedno
 
-**Kontrolne točke:** Vsako 10. epizodo se shrani `ppo_policy_10ep.zip`, `ppo_policy_20ep.zip` itd. z metapodatki (`.json`). Tudi ob prekinitvi se shrani `ppo_model_latest.zip`.
+**Kontrolne točke:** Vsako 10. epizodo se shrani `ppo_policy_Nep.zip` z metapodatki (`.json`). Tudi ob prekinitvi se shrani `ppo_model_latest.zip`.
 
 ```bash
 # Oddaj vse (generiranje poti + učenje)

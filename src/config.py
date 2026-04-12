@@ -73,4 +73,7 @@ CLIP_RANGE = 0.2      # PPO clipping: limits policy change per update
 # Derived constants (do not edit)
 # ══════════════════════════════════════════
 NUM_AGENTS = len(TS_IDS)
+# STEPS_PER_EPISODE below is for the uniform/1h scenario only.
+# For rush-hour scenarios (4h), experiment.py computes the actual value
+# dynamically from args.num_seconds: (rl_seconds // DELTA_TIME) * NUM_AGENTS.
 STEPS_PER_EPISODE = (RL_SECONDS // DELTA_TIME) * NUM_AGENTS
