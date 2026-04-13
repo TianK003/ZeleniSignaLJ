@@ -318,9 +318,11 @@ def main():
 
     print_comparison(df)
 
-    # Save full comparison CSV
+    # Save full comparison CSV (include per_ts_rewards_json if present)
     csv_cols = ["scenario", "label", "controller",
                 "avg_queue", "avg_wait", "total_teleports", "total_reward"]
+    if "per_ts_rewards_json" in df.columns:
+        csv_cols.append("per_ts_rewards_json")
     df[csv_cols].to_csv(args.output, index=False)
     print(f"Saved comparison to {args.output}")
 
