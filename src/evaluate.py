@@ -172,10 +172,11 @@ def run_episode(net_file, route_file, model=None, use_gui=False,
     }
 
 
-def run_scenario(scenario_name, net_file, model, use_gui=False):
+def run_scenario(scenario_name, net_file, model, use_gui=False, skip_baseline=False):
     """
     Run one scenario with both RL and fixed-time controllers.
     Returns list of result dicts (one per controller).
+    If skip_baseline=True, only the RL controller runs (use when baseline is cached).
     """
     cfg = EVAL_SCENARIOS[scenario_name]
     route_file = cfg["route_file"]
@@ -189,11 +190,14 @@ def run_scenario(scenario_name, net_file, model, use_gui=False):
     # Set time-of-day for observation encoding
     experiment.CURRENT_HOUR = cfg.get("start_hour", 0.0)
 
+    controllers = []
+    if not skip_baseline:
+        controllers.append(("fixed_time", (None, True)))
+    if model is not None:
+        controllers.append(("rl", (model, False)))
+
     results = []
-    for controller, (use_model, fixed_ts) in [
-        ("fixed_time", (None, True)),
-        ("rl", (model, False)),
-    ]:
+    for controller, (use_model, fixed_ts) in controllers:
         if controller == "rl" and model is None:
             print(f"  Skipping RL controller (no model loaded).")
             continue
@@ -268,6 +272,10 @@ def main():
         "--output", type=str, default="results/rush_hour_comparison.csv",
         help="Path for output CSV."
     )
+    parser.add_argument(
+        "--skip_baseline", action="store_true",
+        help="Skip the fixed-time baseline run (use when baseline is already cached)."
+    )
     args = parser.parse_args()
 
     os.makedirs("results", exist_ok=True)
@@ -292,7 +300,8 @@ def main():
     all_results = []
 
     for scenario in scenarios:
-        rows = run_scenario(scenario, args.net_file, model, use_gui=args.gui)
+        rows = run_scenario(scenario, args.net_file, model, use_gui=args.gui,
+                            skip_baseline=args.skip_baseline)
         all_results.extend(rows)
 
     if not all_results:
