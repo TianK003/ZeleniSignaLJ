@@ -214,6 +214,11 @@ def run_scenario(scenario_name, net_file, model, use_gui=False, skip_baseline=Fa
         print(f" reward={total_reward:.0f}  queue={ep['avg_queue']:.1f}  "
               f"wait={ep['avg_wait']:.1f}s  teleports={ep['total_teleports']}")
 
+        # JSON-encode per-intersection rewards so dashboard finalizer can read them.
+        # Keys are TLS IDs; values are cumulative reward over the episode.
+        import json as _json
+        per_ts_json = _json.dumps({k: float(v) for k, v in ep["rewards"].items()})
+
         results.append({
             "scenario": scenario_name,
             "label": cfg["label"],
@@ -222,6 +227,7 @@ def run_scenario(scenario_name, net_file, model, use_gui=False, skip_baseline=Fa
             "avg_queue": ep["avg_queue"],
             "avg_wait": ep["avg_wait"],
             "total_teleports": ep["total_teleports"],
+            "per_ts_rewards_json": per_ts_json,
         })
 
     return results
