@@ -47,6 +47,7 @@ wget -O data/osm/map.osm \
 
 ## Hiter začetek
 
+Testirano v WSL2 Ubuntu24.04 s Python 3.12
 ```bash
 # 1. Namestitev SUMO
 sudo add-apt-repository ppa:sumo/stable
@@ -141,14 +142,14 @@ python src/experiment.py --episode_count 50 --tag local_50ep
 python src/experiment.py --scenario morning_rush --episode_count 100 --tag jutro_100ep
 python src/experiment.py --scenario evening_rush --episode_count 100 --tag vecer_100ep
 
-# Nadaljevanje iz kontrolne točke
-python src/experiment.py --episode_count 100 --resume results/experiments/XXXXX/ppo_shared_policy.zip
-
 # Curriculum learning — naključni urni rezini čez cel dan
 python src/experiment.py --episode_count 200 --curriculum --tag curriculum_200ep
 
 # Curriculum z beleženjem napredka (primerja RL vs bazna linija vsako epizodo)
 python src/experiment.py --episode_count 100 --curriculum --log_curriculum --tag curriculum_log
+
+# Nadaljevanje iz kontrolne točke
+python src/experiment.py --episode_count 100 --resume results/experiments/XXXXX/ppo_shared_policy.zip
 
 # Vzporedno učenje na več CPE (za HPC)
 python src/experiment.py --episode_count 500 --num_cpus 4 --tag hpc_500ep
@@ -165,7 +166,7 @@ python src/experiment.py --compare_only
 
 | Zastavica | Opis |
 |-----------|------|
-| `--episode_count N` | Število polnih epizod (avtomatsko prilagojeno za scenarij in vzporednost) |
+| `--episode_count N` | Število polnih epizod (avtomatsko prilagojeno za scenarij in vzporednost) <br/> Epizoda: simulacija enega scenarija (bodisi jutranje/popoldanske koncnice, al pa 24h) |
 | `--total_timesteps N` | Surovo število SB3 korakov |
 | `--max_hours H` | Zaustavitev po H urah (stenski čas) |
 | `--scenario` | `uniform` / `morning_rush` / `evening_rush` / `offpeak` |
@@ -179,6 +180,12 @@ python src/experiment.py --compare_only
 | `--num_cpus N` | Vzporedni SUMO procesi (za HPC). Z N CPE se izvedejo N vzporednih epizod na PPO posodobitev; `batch_size` se avtomatsko skalira na `180*N` za ohranjanje ~20 mini-serij na epoho. |
 | `--resume PATH` | Nadaljevanje iz obstoječe kontrolne točke |
 | `--tag OZNAKA` | Oznaka eksperimenta (za identifikacijo) |
+
+## Napredno učenje (Curriculum Learning)
+
+Z uporabo zastavice `--curriculum` algoritem naključno vzorči različne ure dneva. Sistem izračuna prometni pretok iz dvokoničnega matematičnega modela (`demand_math.get_vph`): konici ob 8:00 in 16:00, ponoči skoraj prazne ceste. Skupno 40.000 vozil/dan (nastavljivo v `config.py` kot `TOTAL_DAILY_CARS`).
+
+Model vsako epizodo vidi drugačen scenarij in se tako nauči splošnih pravil za različne prometne obremenitve. Z `--log_curriculum` dobimo podroben zapis napredka (primerjava RL vs. bazna linija za vsako epizodo) v `curriculum_progress.txt`.
 
 ## Evalvacija
 
@@ -243,7 +250,38 @@ ctrl.print_schedule()
 mode = ctrl.get_mode(hour=7.5)   # -> "rl_morning"
 ```
 
+## Arhitektura cevovoda
+
+```mermaid
+flowchart TD
+    subgraph 1 ["1. Podatki in priprava okolja"]
+        APP_DEMAND["generate_demand.py\n(konične in testne poti)"]
+        NET["SUMO omrežje\n(.net.xml)"]
+        ENV["SUMO okolje\n(filtri agentov, nagradne funkcije)"]
+
+        NET --> ENV
+        APP_DEMAND --> ENV
+    end
+
+    subgraph 2 ["2. Učenje (Lokalno ali HPC)"]
+        ENV --> EXP["experiment.py\n(PPO učenje z deljeno politiko)"]
+        HPC["HPC Arnes (SLURM)\nSkripte za iskanje in teste"] -.-> EXP
+    end
+
+    subgraph 3 ["3. Evalvacija, razložljivost in rezultati"]
+        EXP -->|Naučen model| EVAL["evaluate.py & run_rush_test.py\n(KPI, parni t-testi, statistika)"]
+        EXP -->|Naučen model| EXPL["collect_states.py & explain.py\n(SHAP, UMAP, drevesa)"]
+        EXP -->|Naučen model| PROD["schedule_controller.py\n(Hibridno: RL + fiksni časi)"]
+        
+        EXP -->|Dnevniki in meta| DASH["dashboard.py\n(Interaktivna HTML plošča)"]
+        EVAL -->|Rezultati testov| DASH
+        EXPL -.->|Vizualizacije| DASH
+    end
+```
+
 ## Parametri simulacije
+
+Nastavitve se lahko spreminja v `config.py`.
 
 | Parameter | Vrednost | Opis |
 |-----------|----------|------|
@@ -253,26 +291,22 @@ mode = ctrl.get_mode(hour=7.5)   # -> "rl_morning"
 | `min_green` | 10 | Minimalen čas zelene faze pred preklopom |
 | `max_green` | 90 | Maksimalen čas zelene faze pred ponovnim odločanjem |
 | `reward_fn` | "queue" | Nagrada = negativno število ustavljenih vozil na korak |
-| `WARMUP_SECONDS` | 600 | 10 min mehanske SUMO simulacije pred RL prevzemom |
+| `WARMUP_SECONDS` | 600 | 10 min mehanske SUMO simulacije pred RL prevzemom (Čas da se vozila razporedijo po cestah) |
 
-## PPO hiperparametri
+## PPO hiperparametri 
+
+Nastavitve se lahko spreminja v `config.py`.
 
 | Parameter | Vrednost | Opis |
 |-----------|----------|------|
 | `learning_rate` | 0.001 | Korak gradientnega posodabljanja |
 | `n_steps` | 720 | Korakov na okolje pred PPO posodobitvijo |
-| `batch_size` | 180 (osnova) | Avtomatsko skalirano: `180 * num_cpus` za ohranjanje ~20 mini-serij na epoho |
+| `batch_size` | 180 | Avtomatsko skalirano: `180 * num_cpus` za ohranjanje ~20 mini-serij na epoho |
 | `n_epochs` | 10 | Število prehodov čez zbiralnik na posodobitev |
 | `gamma` | 0.99 | Diskontni faktor (0=kratkovidno, 1=neskončen horizont) |
 | `gae_lambda` | 0.95 | GAE glajenje med pristranskostjo in varianco |
 | `ent_coef` | 0.05 | Entropijski bonus — spodbuja raziskovanje |
 | `clip_range` | 0.2 | PPO obrezovanje: omejuje spremembo politike na posodobitev |
-
-## Napredno učenje (Curriculum Learning)
-
-Z uporabo zastavice `--curriculum` algoritem naključno vzorči različne ure dneva. Sistem izračuna prometni pretok iz dvokoničnega matematičnega modela (`demand_math.get_vph`): konici ob 8:00 in 16:00, ponoči prazne ceste. Skupno 40.000 vozil/dan (nastavljivo v `config.py` kot `TOTAL_DAILY_CARS`).
-
-Model vsako epizodo vidi drugačen scenarij in se tako nauči splošnih pravil za različne prometne obremenitve. Z `--log_curriculum` dobimo podroben zapis napredka (primerjava RL vs. bazna linija za vsako epizodo) v `curriculum_progress.txt`.
 
 ## Razumevanje korakov (timesteps)
 
@@ -286,109 +320,6 @@ Z `--num_cpus N`: N vzporednih SUMO simulacij, `batch_size` avtomatsko skaliran 
 | 50 | 4 | 13 | 52 |
 | 300 | 128 | 3 | 384 |
 | 500 | 128 | 4 | 512 |
-
-## Arhitektura cevovoda
-
-```mermaid
-flowchart TD
-    subgraph DATA ["Podatki"]
-        OSM["OSM izvoz\n(.osm)"]
-        NET["SUMO omrežje\n(.net.xml)"]
-        CFG["SUMO konfig\n(.sumocfg)"]
-        ROU["Prometne poti\n(.rou.xml)"]
-        ROURUSHHOUR["Konične poti\n(*_rush.rou.xml)"]
-    end
-
-    subgraph SRC_SETUP ["Priprava okolja"]
-        CONFIG["config\nTLS IDs + parametri"]
-        DEMANDMATH["demand_math\n24h krivulja"]
-        GENDEM["generate_demand\nscenariiji poti"]
-        TLSPROG["tls_programs\nobnovitev TLS"]
-        AGENTFIL["agent_filter\n5 križišč"]
-        CUSTOMREW["custom_reward\nnagradna fn"]
-    end
-
-    subgraph SRC_TRAIN ["Učenje"]
-        EXPERIMENT["experiment\nučenje PPO"]
-    end
-
-    subgraph SRC_EVAL ["Evalvacija & Analiza"]
-        EVALUATE["evaluate\nKPI primerjava"]
-        EVALHELPER["eval_helper\npodprocesi"]
-        ANALYZE["analyze_sim\nstatistika"]
-        DASHBOARD["dashboard\nHTML plošča"]
-        SCHEDCTRL["schedule_ctrl\nRL/fiksni"]
-        RUSHTEST["run_rush_test\ngeneralizacija"]
-    end
-
-    subgraph SRC_EXPLAIN ["Razložljivost"]
-        COLLECT["collect_states\nzbiranje"]
-        EXPLAIN["explain\nSHAP + UMAP"]
-    end
-
-    subgraph HPC ["HPC Vega"]
-        direction TB
-        CONTAINER["Apptainer vsebnik"]
-        SWEEP["SLURM sweep\n44 opravil"]
-        STATTEST["SLURM stat. testi\n50-semeni"]
-        CONTAINER --> SWEEP
-        CONTAINER --> STATTEST
-    end
-
-    subgraph RESULTS ["Rezultati"]
-        MODEL["model (.zip)"]
-        TRAINLOG["training_log (.csv)"]
-        RESCSV["results (.csv)"]
-        METAJSON["meta (.json)"]
-        RUSHCSV["rush_hour (.csv)"]
-        DASH["dashboard (.html)"]
-        STATRESULTS["stat. test\nrezultati"]
-    end
-
-    OSM -->|"netconvert"| NET
-    NET --> CFG
-    DEMANDMATH --> GENDEM
-    GENDEM -->|"generira poti"| ROU
-    GENDEM -->|"konične poti"| ROURUSHHOUR
-    ROU --> CFG
-    ROURUSHHOUR --> CFG
-
-    CONFIG --> AGENTFIL
-    CONFIG --> TLSPROG
-    NET --> TLSPROG
-
-    CFG --> EXPERIMENT
-    AGENTFIL --> EXPERIMENT
-    TLSPROG --> EXPERIMENT
-    CUSTOMREW --> EXPERIMENT
-
-    EXPERIMENT -->|"bazna linija"| RESCSV
-    EXPERIMENT -->|"model"| MODEL
-    EXPERIMENT -->|"dnevnik"| TRAINLOG
-    EXPERIMENT -->|"meta"| METAJSON
-
-    MODEL --> EVALUATE
-    MODEL --> RUSHTEST
-    ROURUSHHOUR --> EVALUATE
-    ROURUSHHOUR --> RUSHTEST
-    EVALUATE -->|"KPI"| RUSHCSV
-    RUSHTEST -->|"summary.csv"| STATRESULTS
-    EVALHELPER --> EXPERIMENT
-
-    RESCSV --> DASHBOARD
-    RUSHCSV --> DASHBOARD
-    STATRESULTS --> DASHBOARD
-    ANALYZE --> DASHBOARD
-    DASHBOARD --> DASH
-
-    MODEL --> SCHEDCTRL
-
-    MODEL -->|"zažene model"| COLLECT
-    COLLECT -->|"harvested_data.pkl"| EXPLAIN
-
-    SWEEP -->|"učenje na Vegi"| EXPERIMENT
-    STATTEST -->|"50-semeni testi"| RUSHTEST
-```
 
 ## Struktura projekta
 
@@ -452,7 +383,7 @@ zeleni-signalj/
 - **sumo-rl 1.4.5** — PettingZoo ovoj za SUMO (več-agentno)
 - **stable-baselines3 2.8.0** — implementacija PPO algoritma
 - **SuperSuit 3.9+** — vektorizacija PettingZoo okolja za SB3
-- **HPC Vega** (IZUM) — superračunalnik za učenje z večjim številom epizod
+- **HPC Arnes** (SLING) — superračunalnik za učenje z večjim številom epizod
 
 ## HPC eksperimenti
 
