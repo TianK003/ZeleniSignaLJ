@@ -202,103 +202,24 @@ Izhod: `results/rush_hour_comparison.csv` (primerjava po scenarijih) + `results/
 
 ## Razložljivost modela (Interpretability)
 
-Dvostopenjski postopek za razlago naučene politike. Najprej zbiramo podatke iz modela, nato generiramo vizualizacije.
-
-### 1. Zbiranje stanj (`collect_states.py`)
-
-Zažene naučen PPO model skozi več epizod in shrani opazovanja, akcije, 64-dimenzionalne aktivacije latentne plasti in metapodatke v `harvested_data.pkl`. Ure dneva so naključne znotraj okna scenarija, kar zagotovi pokritost različnih prometnih obremenitev.
+Dvostopenjski postopek za razlago naučene politike: zbiranje stanj iz modela, nato generiranje vizualizacij.
 
 ```bash
-# Zberi podatke iz modela jutranje konice (ure 6-10h, ustrezne poti)
+# 1. Zberi podatke iz modela (opazovanja, akcije, latentne aktivacije)
 python src/collect_states.py --model_path results/experiments/XXXXX/ppo_shared_policy.zip \
     --scenario morning_rush --episodes 12
 
-# Zberi podatke iz modela večerne konice (ure 14-18h)
-python src/collect_states.py --model_path results/experiments/YYYYY/ppo_shared_policy.zip \
-    --scenario evening_rush --episodes 12
-
-# Mega-politika: oba modela s schedule controllerjem (40% jutranja, 40% večerna, 20% ostalo)
-python src/collect_states.py --megapolicy \
-    --model_morning <jutranji_model>.zip \
-    --model_evening <vecerni_model>.zip \
-    --episodes 12 --output_dir results/megapolicy_explain/
-# -> results/megapolicy_explain/harvested_data_megapolicy.pkl
-```
-
-| Parameter | Opis |
-|-----------|------|
-| `--model_path` | Pot do naučenega PPO modela (.zip) |
-| `--scenario` | `morning_rush` / `evening_rush` / `offpeak` / `uniform` — nastavi datoteko poti in razpon ur |
-| `--episodes` | Število epizod za zbiranje (privzeto 12, priporočeno 10-15) |
-| `--output_dir` | Izhodna mapa (privzeto: mapa modela) |
-| `--megapolicy` | Način mega-politike: uporabi oba modela z načrtovalcem |
-| `--model_morning` | Pot do jutranjeega modela (samo `--megapolicy`) |
-| `--model_evening` | Pot do večernega modela (samo `--megapolicy`) |
-
-### 2. Generiranje razlag (`explain.py`)
-
-Iz zbranih podatkov generira tri vrste vizualizacij. Vsa križišča so označena s čitljivimi imeni (Kolodvor, Pivovarna, Slovenska, Trzaska, Askerceva), izhodne datoteke pa so opisno poimenovane (npr. `kolodvor-decision-tree.png`).
-
-```bash
+# 2. Generiraj razlage (SHAP, odločitvena drevesa, UMAP)
 python src/explain.py --data_path results/experiments/XXXXX/harvested_data.pkl
 # -> results/experiments/XXXXX/explanations/
 ```
 
-#### Nadomestno odločitveno drevo (Policy Distillation)
+Tri vrste vizualizacij za vsako od 5 križišč:
+- **Nadomestno odločitveno drevo** — plitvo drevo (globina 4) kot človeku berljiv nadomestek PPO politike. Listni vozlišči kažejo smerne skupine (npr. "Smer 1 + Smer 3"), notranji pogoje v slovenščini. Pokritost PPO (fidelity) prikazana z značko.
+- **SHAP atribucija značilk** — beeswarm diagram kaže, katere značilke (gostota pasu, dolžina vrste, čas dneva) najbolj vplivajo na izbiro akcije.
+- **UMAP projekcija** — 64-dim latentni prostor PPO mreže projiciran v 2D. Barvanje po akciji, uri dneva in križišču razkrije, ali model loči prometne režime.
 
-Za vsako od 5 križišč prilagodimo plitvo odločitveno drevo (globina 4) kot **človeku berljiv nadomestek** nevronske politike PPO.
-
-**Analiza faz:** Skripta analizira dejanske SUMO signalne stanje (nize znakov `GGrrGGrr...` za vsako zeleno fazo) in nadzorovane povezave (kateri pasovi dobijo zeleno v kateri fazi). Povezave so združene po izvorni cesti (pristopni krak križišča), nato razporejene v **smerne skupine** (Smer 1, Smer 2, ...). Vsaka smer predstavlja skupino cest, ki vedno dobijo zeleno skupaj. Listni vozlišči drevesa tako kažejo npr. **"Smer 1 + Smer 3"** namesto neberljivega "Faza 2".
-
-**Notranji vozlišči** prikazujejo pogoje v slovenščini (npr. "Vrsta pas 2 ≤ 0.35", "Gostota pas 0 ≤ 0.12", "sin(čas) ≤ -0.50").
-
-**Pokritost PPO** (fidelity) je prikazana z značko v zgornjem levem kotu — delež akcij, pri katerih se drevo ujema s PPO modelom. Če je pokritost < 60 %, drevo slabo aproksimira politiko.
-
-Drevo uporablja kompakten izris (širina poddreves, ne enakomeren razmik listov), kar ga naredi berljivega brez povečevanja.
-
-Izhod: `{ime}-decision-tree.png` (5 slik, npr. `kolodvor-decision-tree.png`)
-
-#### SHAP atribucija značilk (Feature Attribution)
-
-Uporabimo `TreeExplainer` na nadomestnem drevesu za izračun SHAP vrednosti za vsako opazovano značilko. Imena značilk so prevedena v slovenščino:
-
-| Surovo ime | Prikazano ime |
-|------------|---------------|
-| `Density_-123456#0_1` | Gostota pas 1 |
-| `Queue_-123456#0_2` | Vrsta pas 2 |
-| `Phase_0` | Faza 0 |
-| `MinGreenPassed` | Min. zelena pretečena |
-| `SinTime` / `CosTime` | sin(čas) / cos(čas) |
-
-Beeswarm diagram pokaže, katere značilke najbolj vplivajo na izbiro akcije agenta. To razkrije, ali agent "gleda" na prave pasove in ali čas dneva vpliva na odločanje.
-
-Izhod: `{ime}-shap.png` (5 slik, npr. `trzaska-shap.png`)
-
-#### UMAP projekcija latentnega prostora (Latent Space)
-
-64-dimenzionalne aktivacije skrite plasti PPO mreže projiciramo v 2D z UMAP algoritmom.
-
-**Kako brati UMAP diagrame:**
-- Osi (x, y) **nimajo fizikalnega pomena** — sta abstraktni projekciji 64-dimenzionalnega latentnega prostora nevronske mreže. Zato na diagramih ni oznak osi.
-- **Bližje točke = podobna notranja stanja mreže.** Če dve prometni situaciji ležita blizu skupaj, ju je PPO model interno reprezentiral podobno — ne glede na to, ali sta iz istega križišča ali ure.
-- **Ločeni grozdi = model je naučil ločevati režime.** Jasni barvni grozdi kažejo, da je model razvil različne interne strategije za različne pogoje.
-- **Razpršeni diagrami brez grozdov** kažejo, da model ne razlikuje med pogoji v tej dimenziji.
-
-Tri barvanja:
-- **Po akciji** (`umap-actions.png`) — ločeni barvni grozdi = model je naučil ločevati različne signalne odločitve v svojem latentnem prostoru
-- **Po uri dneva** (`umap-time.png`) — gradient od modre do rdeče = model ločuje jutranje prometne razmere od poznejših; pomešane barve = model ne ločuje po uri
-- **Po križišču** (`umap-intersections.png`) — ločeni grozdi po križišču = deljena politika kljub temu razlikuje med lokacijami; pomešani = enako obravnava vsa križišča
-
-### Priporočeno število epizod
-
-| Epizode | Podatkovnih točk | Uporabnost |
-|---------|-------------------|------------|
-| 3 | ~10.800 | Samo za dimni test — UMAP redek |
-| 5 | ~18.000 | Minimalno. Drevesa OK, UMAP redek |
-| **10-15** | **~36.000-54.000** | **Priporočeno.** Stabilne SHAP vrednosti, čisti UMAP grozdi |
-| 30+ | ~108.000+ | Padajoči donosi; UMAP postane počasen |
-
-10-15 epizod zagotovi dobro pokritost prometnih razmer znotraj okna scenarija (ura je naključna vsako epizodo), kar omogoča zaznavanje prometnih režimov v UMAP projekciji.
+Priporočeno 10-15 epizod za stabilne SHAP vrednosti in čiste UMAP grozde (~36.000-54.000 podatkovnih točk).
 
 ## Načrtovalec (Schedule Controller)
 
@@ -355,24 +276,9 @@ Model vsako epizodo vidi drugačen scenarij in se tako nauči splošnih pravil z
 
 ## Razumevanje korakov (timesteps)
 
-En "korak" (timestep) v SB3 = 5 sekund simuliranega prometa za 1 semafor. Ker je 5 semaforjev vektoriziranih prek SuperSuit, SB3 prišteje 5 korakov na vsak SUMO korak.
+En SB3 korak = 5 s simuliranega prometa za 1 semafor. S 5 semaforji: `1 epizoda (1h) = 3600/5 * 5 = 3600 korakov`, `1 epizoda (4h rush) = 14400 korakov`.
 
-```
-1 epizoda (uniform, 1h) = rl_seconds / delta_time * num_agents
-                        = 3600 / 5 * 5 = 3600 SB3 korakov
-
-1 epizoda (morning_rush, 4h) = 14400 / 5 * 5 = 14400 SB3 korakov
-
-n_steps = 720 → 720 * 5 agentov = 3600 korakov na zbiralnik (pri 1 CPE)
-```
-
-### Vzporednost (--num_cpus)
-
-Z `--num_cpus N` se ustvari N neodvisnih SUMO simulacij (`SubprocVecEnv`). Vsaka ima 5 agentov, skupaj N*5 agentov. PPO zbira `n_steps=720` korakov iz vseh vzporednih okolij hkrati, kar daje `720 * N * 5` prehodov na PPO posodobitev.
-
-`batch_size` se avtomatsko skalira na `180 * N`, da ohranja ~20 mini-serij na epoho (enak razmerji kot pri 1 CPE).
-
-`--episode_count` se pretvori v PPO posodobitve: `ceil(episode_count / num_cpus)`, ker vsaka posodobitev zbere izkušnje iz N vzporednih epizod.
+Z `--num_cpus N`: N vzporednih SUMO simulacij, `batch_size` avtomatsko skaliran na `180*N`, `--episode_count` pretvorjen v `ceil(episode_count/N)` PPO posodobitev.
 
 | `--episode_count` | `--num_cpus` | PPO posodobitev | Vzporednih epizod |
 |-------------------|--------------|------------------|--------------------|
@@ -386,58 +292,64 @@ Z `--num_cpus N` se ustvari N neodvisnih SUMO simulacij (`SubprocVecEnv`). Vsaka
 ```mermaid
 flowchart TD
     subgraph DATA ["Podatki"]
-        OSM["data/osm/bleiweisova.osm\nOpenStreetMap izvoz"]
-        NET["data/networks/ljubljana.net.xml\nSUMO omrežje"]
-        CFG["data/networks/ljubljana.sumocfg\nSUMO konfiguracija"]
-        ROU["data/routes/routes.rou.xml\nPrometno povpraševanje"]
-        ROURUSHHOUR["data/routes/routes_*_rush.rou.xml\nKonični scenariji"]
+        OSM["OSM izvoz\n(.osm)"]
+        NET["SUMO omrežje\n(.net.xml)"]
+        CFG["SUMO konfig\n(.sumocfg)"]
+        ROU["Prometne poti\n(.rou.xml)"]
+        ROURUSHHOUR["Konične poti\n(*_rush.rou.xml)"]
     end
 
     subgraph SRC_SETUP ["Priprava okolja"]
-        CONFIG["src/config.py\nTLS IDs + imena križišč"]
-        DEMANDMATH["src/demand_math.py\ndvokonična 24h krivulja"]
-        GENDEM["src/generate_demand.py\nuniform + scenariji koničnih ur"]
-        TLSPROG["src/tls_programs.py\nobnovitev ne-ciljnih programov"]
-        AGENTFIL["src/agent_filter.py\nPettingZoo ovoj → 5 križišč"]
-        CUSTOMREW["src/custom_reward.py\nprilagojena nagradna funkcija"]
+        CONFIG["config\nTLS IDs + parametri"]
+        DEMANDMATH["demand_math\n24h krivulja"]
+        GENDEM["generate_demand\nscenariiji poti"]
+        TLSPROG["tls_programs\nobnovitev TLS"]
+        AGENTFIL["agent_filter\n5 križišč"]
+        CUSTOMREW["custom_reward\nnagradna fn"]
     end
 
     subgraph SRC_TRAIN ["Učenje"]
-        EXPERIMENT["src/experiment.py\nceloten cevovod"]
+        EXPERIMENT["experiment\nučenje PPO"]
     end
 
     subgraph SRC_EVAL ["Evalvacija & Analiza"]
-        EVALUATE["src/evaluate.py\nKPI primerjava po scenarijih"]
-        EVALHELPER["src/eval_helper.py\npomočnik za podprocese"]
-        ANALYZE["src/analyze_sim.py\nteleporti, pretoki, statistika"]
-        DASHBOARD["src/dashboard.py\nHTML nadzorna plošča"]
-        SCHEDCTRL["src/schedule_controller.py\načrtovalec konic RL/fiksni"]
+        EVALUATE["evaluate\nKPI primerjava"]
+        EVALHELPER["eval_helper\npodprocesi"]
+        ANALYZE["analyze_sim\nstatistika"]
+        DASHBOARD["dashboard\nHTML plošča"]
+        SCHEDCTRL["schedule_ctrl\nRL/fiksni"]
+        RUSHTEST["run_rush_test\ngeneralizacija"]
     end
 
     subgraph SRC_EXPLAIN ["Razložljivost"]
-        COLLECT["src/collect_states.py\nzbiranje stanj in latentov"]
-        EXPLAIN["src/explain.py\nSHAP, drevesa, UMAP"]
+        COLLECT["collect_states\nzbiranje"]
+        EXPLAIN["explain\nSHAP + UMAP"]
     end
 
-    subgraph HPC ["HPC — Vega superračunalnik"]
-        DEF["hpc/traffic_rl.def\nApptainer vsebnik"]
-        SLURM["hpc/sweep/submit_train.sh\nSLURM opravilo"]
+    subgraph HPC ["HPC Vega"]
+        direction TB
+        CONTAINER["Apptainer vsebnik"]
+        SWEEP["SLURM sweep\n44 opravil"]
+        STATTEST["SLURM stat. testi\n50-semeni"]
+        CONTAINER --> SWEEP
+        CONTAINER --> STATTEST
     end
 
     subgraph RESULTS ["Rezultati"]
-        MODEL["results/experiments/ID/\nppo_shared_policy.zip"]
-        TRAINLOG["results/experiments/ID/\ntraining_log.csv"]
-        RESCSV["results/experiments/ID/\nresults.csv"]
-        METAJSON["results/experiments/ID/\nmeta.json"]
-        RUSHCSV["results/rush_hour_comparison.csv"]
-        DASH["results/dashboard.html"]
+        MODEL["model (.zip)"]
+        TRAINLOG["training_log (.csv)"]
+        RESCSV["results (.csv)"]
+        METAJSON["meta (.json)"]
+        RUSHCSV["rush_hour (.csv)"]
+        DASH["dashboard (.html)"]
+        STATRESULTS["stat. test\nrezultati"]
     end
 
     OSM -->|"netconvert"| NET
     NET --> CFG
     DEMANDMATH --> GENDEM
-    GENDEM -->|"generira povpraševanje"| ROU
-    GENDEM -->|"generira konično povpraševanje"| ROURUSHHOUR
+    GENDEM -->|"generira poti"| ROU
+    GENDEM -->|"konične poti"| ROURUSHHOUR
     ROU --> CFG
     ROURUSHHOUR --> CFG
 
@@ -453,15 +365,19 @@ flowchart TD
     EXPERIMENT -->|"bazna linija"| RESCSV
     EXPERIMENT -->|"model"| MODEL
     EXPERIMENT -->|"dnevnik"| TRAINLOG
-    EXPERIMENT -->|"metapodatki"| METAJSON
+    EXPERIMENT -->|"meta"| METAJSON
 
     MODEL --> EVALUATE
+    MODEL --> RUSHTEST
     ROURUSHHOUR --> EVALUATE
-    EVALUATE -->|"KPI po scenarijih"| RUSHCSV
+    ROURUSHHOUR --> RUSHTEST
+    EVALUATE -->|"KPI"| RUSHCSV
+    RUSHTEST -->|"summary.csv"| STATRESULTS
     EVALHELPER --> EXPERIMENT
 
     RESCSV --> DASHBOARD
     RUSHCSV --> DASHBOARD
+    STATRESULTS --> DASHBOARD
     ANALYZE --> DASHBOARD
     DASHBOARD --> DASH
 
@@ -470,8 +386,8 @@ flowchart TD
     MODEL -->|"zažene model"| COLLECT
     COLLECT -->|"harvested_data.pkl"| EXPLAIN
 
-    DEF --> SLURM
-    SLURM -->|"zažene na Vegi"| EXPERIMENT
+    SWEEP -->|"učenje na Vegi"| EXPERIMENT
+    STATTEST -->|"50-semeni testi"| RUSHTEST
 ```
 
 ## Struktura projekta
@@ -499,7 +415,7 @@ zeleni-signalj/
 │   ├── collect_states.py      # Zbiranje stanj in latentnih aktivacij iz naučenega modela
 │   ├── explain.py             # Razložljivost: SHAP, odločitvena drevesa, UMAP
 │   ├── analyze_sim.py         # Analiza SUMO izhoda (teleporti, pretoki)
-│   └── dashboard.py           # HTML nadzorna plosca (9 zavihkov: scenariji, mega-politike, generalizacija, razlozljivost)
+│   └── dashboard.py           # HTML nadzorna plosca (zavihki: scenariji, generalizacija, razlozljivost)
 ├── hpc/
 │   ├── common.sh             # Skupna HPC nastavitev (venv, SUMO_HOME)
 │   ├── traffic_rl.def        # Apptainer definicija vsebnika
@@ -508,15 +424,11 @@ zeleni-signalj/
 │   │   ├── submit_all.sh     # Oddaja z dvofaznim cevovodom (poti → učenje)
 │   │   ├── gen_train_routes.slurm  # Generiranje 100+100 ucnih poti (faza 1)
 │   │   └── *.slurm           # Posamezne ucne skripte (faza 2)
-│   └── statistical-test/     # Statisticno testiranje (24h mega-politike + konicni testi)
-│       ├── generate_mega_jobs.py  # Generator 11 SLURM skript (50 ponovitev + generiranje poti)
-│       ├── generate_rush_jobs.py  # Generator konicnih testov (3+3 modelov + 2 bazni liniji)
-│       ├── submit_all.sh          # Oddaja mega-politik
+│   └── statistical-test/     # Statisticno testiranje (konicni testi generalizacije)
+│       ├── generate_rush_jobs.py  # Generator SLURM skript za konicne teste
 │       ├── submit_rush.sh         # Oddaja konicnih testov
-│       ├── gen_routes.slurm       # Generiranje 50 prometnih poti za mega-politike
 │       ├── gen_routes_morning_rush.slurm  # Generiranje 50 poti za jutranji test
 │       ├── gen_routes_evening_rush.slurm  # Generiranje 50 poti za vecerni test
-│       ├── mega_*.slurm           # 9 mega-politik + 1 bazna linija
 │       └── rush_*.slurm           # 6 modelov + 2 bazni liniji (konicni testi)
 ├── models/               # Shranjeni modeli (kontrolne točke)
 ├── logs/                 # Dnevniki učenja
@@ -524,11 +436,7 @@ zeleni-signalj/
     ├── experiments/      # Rezultati po eksperimentih
     │   └── <run_id>/     # meta.json, results.csv, ppo_shared_policy.zip
     │       └── checkpoints/  # ppo_policy_10ep.zip + .json, ppo_policy_20ep.zip + .json, ...
-    ├── statistical-test/ # Rezultati 24h statisticnih testov (50 ponovitev x 10 pogojev)
-    │   ├── M1E1/         # meta.json + 50x run_seed_*.json + summary.csv
-    │   ├── ...           # M1E2, M1E3, M2E1, ..., M3E3
-    │   └── baseline/     # Bazna linija (sami fiksni casi)
-    ├── rush-test/        # Rezultati testov generalizacije konicnih ur
+    ├── statistical-test/ # Rezultati testov generalizacije konicnih ur
     │   ├── M1_morning/   # meta.json + 50x run_seed_*.json + summary.csv
     │   ├── ...           # M2_morning, M3_morning, E1_evening, ..., E3_evening
     │   ├── baseline_morning/  # Bazna linija (jutranja konica)
@@ -552,7 +460,7 @@ zeleni-signalj/
 
 Prvo iskanje: 24 konfiguracij x 200 epizod na 128 CPE-jih. Modeli so se učili na eni sami prometni poti na scenarij. Najboljši modeli so dosegli 12–18 % izboljšanje na učni poti, vendar niso posplošili na nevidene prometne vzorce (potrjeno s testi generalizacije koničnih ur: -15 % do -27 % poslabšanje na naključnih poteh).
 
-### Iskanje 2 (v teku): Učenje z naključnimi potmi
+### Iskanje 2 (zaključeno): Učenje z naključnimi potmi
 
 44 SLURM skript v `hpc/sweep/`, generirane z `hpc/sweep/generate_jobs.py`. Vse uporabljajo `--route_dir` s 50 naključnimi prometnimi potmi na scenarij, da preprečijo preveliko prilagajanje na izvorno-ciljne pare (OD-pair overfitting). S 300 epizodami in naključno izbiro vsaka pot dobi ~6 ponovitev — dovolj za utrjevanje vzorcev brez memorizacije posameznih poti.
 
@@ -590,115 +498,96 @@ bash hpc/sweep/submit_all.sh entanneal
 squeue -u $USER
 ```
 
-## Izbor najboljših politik in mega-politike
+## Izbor najboljsih politik (Iskanje 1 — ena pot)
 
-Po izvedbi 24 eksperimentov na HPC (3 nagradne funkcije x 2 hitrosti učenja x 2 scenarija + entropy annealing variante) smo na podlagi nadzorne plošče izbrali **3 najboljše politike za jutranjo konico** in **3 najboljše za vecerno konico** glede na izboljsanje % nad bazno linijo (fiksni casi).
+Po izvedbi 24 eksperimentov na HPC (3 nagradne funkcije x 2 hitrosti ucenja x 2 scenarija + entropy annealing variante) smo na podlagi nadzorne plosce izbrali **3 najboljse politike za jutranjo konico** in **3 najboljse za vecerno konico** glede na izboljsanje % nad bazno linijo (fiksni casi). Ti modeli so se ucili na eni sami prometni poti in niso posplošili na nevidene prometne vzorce.
 
 ### Najboljse politike — jutranja konica (06:00-10:00)
 
 | Rang | Nagradna funkcija | Hitrost ucenja | Izboljsanje |
 |------|-------------------|----------------|-------------|
-| M1 | diff-waiting-time | 1e-3 | **+18.2%** |
-| M2 | pressure | 1e-3 | **+17.2%** |
-| M3 | queue (privzeta) | 3e-4 | **+17.1%** |
+| M1 | diff-waiting-time | 1e-3 | **+18,2 %** |
+| M2 | pressure | 1e-3 | **+17,2 %** |
+| M3 | queue (privzeta) | 3e-4 | **+17,1 %** |
 
 ### Najboljse politike — vecerna konica (14:00-18:00)
 
 | Rang | Nagradna funkcija | Hitrost ucenja | Entropy annealing | Izboljsanje |
 |------|-------------------|----------------|-------------------|-------------|
-| E1 | pressure | 1e-3 | da | **+15.1%** |
-| E2 | diff-waiting-time | 1e-3 | da | **+15.0%** |
-| E3 | pressure | 3e-4 | da | **+12.9%** |
+| E1 | pressure | 1e-3 | da | **+15,1 %** |
+| E2 | diff-waiting-time | 1e-3 | da | **+15,0 %** |
+| E3 | pressure | 3e-4 | da | **+12,9 %** |
 
-### Mega-politike (3 x 3 = 9 kombinacij)
+## Rezultati: Najboljsa modela (Iskanje 2 — naključne poti, 3200 epizod)
 
-Mega-politika kombinira eno jutranjo in eno vecerno politiko z nacrtovalcem (Schedule Controller):
-- **V konicnih urah** (06:00-10:00, 14:00-18:00): RL agent (PPO model) krmili 5 ciljnih kriziscc
-- **Izven konic** (10:00-14:00, 18:00-06:00): vsa kriziscca teccejo na izvornih SUMO fiksnih ccasih
+Po drugem iskanju (44 konfiguracij x 3200 epizod na 16 CPE-jih, ucenje z naključnimi potmi) smo izbrali najboljsa modela na podlagi izboljsanja pri ucenju:
 
-To daje 9 mega-politik: M1E1, M1E2, M1E3, M2E1, M2E2, M2E3, M3E1, M3E2, M3E3.
+| Scenarij | Model | Nagradna funkcija | LR | Izboljsanje (ucenje) |
+|----------|-------|-------------------|----|----------------------|
+| Jutranja konica (06:00-10:00) | `morningrush_diffwaitingtime_lr1e3_3200ep` | diff-waiting-time | 1e-3 | +1,57 % |
+| Vecerna konica (14:00-18:00) | `eveningrush_diffwaitingtime_lr1e3_3200ep` | diff-waiting-time | 1e-3 | +8,16 % |
 
-## Statisticno testiranje (24h simulacije)
+### Statisticno testiranje generalizacije (50-semeni parni testi)
 
-Za statisticno veljavno primerjavo mega-politik z bazno linijo izvajamo **50 ponovitev** vsake mega-politike na polnih 24-urnih simulacijah z zasnovo **parnih primerjav** (matched-pairs design).
+Za preverjanje, ali modela posplošita na nevidene prometne vzorce, smo izvedli 50 neodvisnih testov z razlicnimi prometnimi potmi. Vsak test primerja RL model z bazno linijo (fiksni casi) na isti prometni poti — razlike izhajajo izkljucno iz strategije krmiljenja.
 
-### Zasnova testa (parni pari)
+#### Jutranja konica (`morningrush_diffwaitingtime_lr1e3_3200ep`)
 
-- **10 pogojev:** 9 mega-politik + 1 bazna linija (sami fiksni casi)
-- **50 ponovitev** na pogoj, vsaka z unikatnim SUMO semenom (1-50)
-- **Razlicne prometne poti za vsako seme:** `routes_full_day_seed_00.rou.xml` do `seed_49.rou.xml` — generirane z razlicnimi semeni v `randomTrips.py`, kar daje razlicne izvorno-ciljne pare ob ohranjanju istega dvokonicnega prometnega profila
-- **Parno primerjanje:** za vsako seme N vsi pogoji (bazna linija + 9 mega-politik) uporabijo isto datoteko poti — razlike izhajajo izkljucno iz strategije krmiljenja
-- **Polni 24h dvokonicni profil** z usmerjeno asimetrijo (70% vhodni promet zjutraj, 70% izhodni zvecer)
+| Metrika | Vrednost |
+|---------|----------|
+| Skupna nagrada vs. bazna linija | **-1,99 %** (rahlo slabse) |
+| Izboljsanje cakalnega casa | **+1,84 %** |
+| Parni t-test (p-vrednost) | 0,092 (ni statisticno znacilno pri alpha=0,05) |
+| Cohenov d | -0,243 (majhen ucinek) |
 
-### Dinamicno preklapljanje RL/fiksni cas (`run_24h.py`)
+**Rezultati po kriziscih:**
 
-24h simulacija tece kot en neprekinjen SUMO okolje (86400 sekund). Na vsakem koraku skripta preveri uro simulacije in preklopi ciljne semaforje med RL in fiksnim casom:
+| Krizisce | Izboljsanje nagrade |
+|----------|---------------------|
+| Askerceva | **+18,48 %** |
+| Pivovarna | -0,12 % |
+| Slovenska | -5,08 % |
+| Trzaska | -14,14 % |
+| Kolodvor | -22,13 % |
 
-| Cas | Nacin | Opis |
-|-----|-------|------|
-| 00:00-06:00 | Fiksni cas | Obnovljen izvorni SUMO program |
-| 06:00-10:00 | RL (jutranji model) | PPO agent krmili 5 krizisc |
-| 10:00-14:00 | Fiksni cas | Obnovljen izvorni SUMO program |
-| 14:00-18:00 | RL (vecerni model) | PPO agent krmili 5 krizisc |
-| 18:00-24:00 | Fiksni cas | Obnovljen izvorni SUMO program |
+![Rezultati po kriziscih — jutranja konica](./data/media/Morning_bar_graph_intersection.png)
 
-**Pomembno:** Ob preklopu na fiksni cas se poklice `setProgramLogic()` za obnovitev faz **in** `setProgram()` za ponoven zagon avtomaticnega cikliranja. Brez `setProgram()` bi semaforji obticsali na eni fazi (ena smer stalno zelena), ker `setRedYellowGreenState()` iz sumo-rl postavi semafor v rocni nacin. Ta popravek je potreben na dveh mestih:
-1. **Ciljni semaforji** (`run_24h.py`, `_switch_to_fixed_time`) — ob preklopu iz RL v fiksni cas
-2. **Neciljni semaforji** (`tls_programs.py`, `restore_non_target_programs`) — ob inicializaciji okolja, ko sumo-rl zamenja programe vseh 37 semaforjev. Brez `setProgram()` je 32 neciljnih semaforjev obticsalo celotno 24-urno simulacijo, kar je povzrocilo -187% degradacijo v nocnem oknu (00:00-06:00).
+![Cakalni cas — jutranja konica](./data/media/Morning_waiting_time_box_graph.png)
 
-### Merjene metrike (na ponovitev)
+#### Vecerna konica (`eveningrush_diffwaitingtime_lr1e3_3200ep`)
 
-- Skupna kumulativna nagrada (vsa krizisca, vsi casovni koraki)
-- Nagrada, povprecna cakalna vrsta in cakalni cas **po kriziscu** (5 krizisc)
-- Razdelitev **po casovnem oknu** (noc, jutranja konica, dnevni obok, vecerna konica, vecerni obok)
-- Skupni teleporti, vozila odsla/prispela
+| Metrika | Vrednost |
+|---------|----------|
+| Skupna nagrada vs. bazna linija | **-1,11 %** (rahlo slabse) |
+| Izboljsanje cakalnega casa | **+4,29 %** |
+| Parni t-test (p-vrednost) | 0,187 (ni statisticno znacilno pri alpha=0,05) |
+| Cohenov d | -0,189 (majhen ucinek) |
 
-### Statisticna analiza (parni testi)
+**Rezultati po kriziscih:**
 
-Iz 50 parnih ponovitev izracunamo za vsako mega-politiko:
-- **Povprecje, mediana, standardni odklon** razlik (mega - bazna)
-- **95% interval zaupanja** (t-porazdelitev)
-- **Parni t-test** (`ttest_rel`) — primerja istosemenske pare
-- **Wilcoxon test** predznacenih rangov — neparametricni parni test
-- **Cohenov d** za parne podatke: `d = povprecje(razlike) / std(razlike)`
+| Krizisce | Izboljsanje nagrade |
+|----------|---------------------|
+| Askerceva | **+13,40 %** |
+| Pivovarna | **+1,80 %** |
+| Kolodvor | -2,65 % |
+| Slovenska | -13,35 % |
+| Trzaska | -14,13 % |
 
-Parni testi so mocnejsi od neodvisnih, ker eliminirajo varianco prometnih poti (isti promet za bazno linijo in mega-politiko pri vsakem semenu).
+![Rezultati po kriziscih — vecerna konica](./data/media/Evening_bar_graph_intersection.png)
 
-### Zagon
+![Cakalni cas — vecerna konica](./data/media/Evening_waiting_time_box_graph.png)
 
-```bash
-# 1. Generiraj 50 razlicnih prometnih poti (enkrat, ~100 min)
-python src/generate_demand.py --statistical_routes 50
-# -> data/routes/statistical-test/routes_full_day_seed_00..49.rou.xml
+### Interpretacija rezultatov
 
-# 2. Generiraj SLURM skripte (1 generiranje poti + 10 simulacij)
-python hpc/statistical-test/generate_mega_jobs.py
+Modeli z naključnimi potmi (Iskanje 2) kazejo bistveno boljso posplošitev kot modeli z eno potjo (Iskanje 1, ki so se poslabsali za -15 % do -27 %). Modeli iz Iskanja 2 so primerljivi z bazno linijo po skupni nagradi, z manjsim izboljsanjem cakalnih casov. Izboljsanja niso statisticno znacilna (p > 0,05).
 
-# 3. Oddaj vse na HPC (najprej generira poti, nato simulacije)
-bash hpc/statistical-test/submit_all.sh
-
-# 3b. Preskocci generiranje poti (ce ze obstajajo)
-bash hpc/statistical-test/submit_all.sh --skip-routes
-
-# 4. Rezultati: results/statistical-test/{M1E1,...,baseline}/summary.csv
-
-# 5. Generiraj nadzorno plosco z zavihkom Mega-politike
-python src/dashboard.py
-```
-
-### Ocenjen cas na HPC
-
-| Operacija | Cas |
-|-----------|-----|
-| Generiranje 50 prometnih poti | ~100 min |
-| Ena 24h simulacija | ~10-20 min |
-| 50 ponovitev (50 vzporednih delavcev, 64 CPE) | ~30-50 min |
-| Skupaj na opravilo (z varnostno rezervo) | 8h (zahtevano) |
-| Vseh 10 opravil (vzporedno) | ~1h stenske ure |
+**Kljucna ugotovitev:** Agent dosledno izboljsa Askercevo, a poslabsa Trzasko in Kolodvor. To nakazuje, da deljena politika (en model za 5 krizišc) tezko optimizira vsa krizisca hkrati — izboljsanje enega lahko poslabsa sosednje. Prihodnje delo bi raziskalo locene politike ali hierarhicno koordinacijo.
 
 ## Nadzorna plosca (Dashboard)
 
-Interaktivna HTML nadzorna plosca (`results/dashboard.html`) s 6 zavihki:
+Interaktivna HTML nadzorna plosca (`results/dashboard.html`) za pregled vseh eksperimentov. Zgornji del prikazuje KPI kartice (stevilo eksperimentov, najboljse izboljsanje, povprecno izboljsanje, skupna nagrada bazne linije), spodaj pa interaktivne grafe s filtriranjem po scenariju in oznaki.
+
+![Nadzorna plosca](./data/media/Dashboard.png)
 
 ```bash
 python src/dashboard.py --no-prompt
@@ -707,63 +596,42 @@ python src/dashboard.py --no-prompt
 
 | Zavihek | Vsebina |
 |---------|---------|
-| **Primerjava** | Primerjava vseh eksperimentov: bazna linija vs RL, izboljsanje %, filtriranje |
-| **Krizisca** | Razdelitev po 5 kriziscih: nagrada, izboljsanje %, trendi |
-| **Ucenje** | Krivulje ucenja (epizode in koraki) za izbrane eksperimente |
-| **Hiperparametri** | Razsevni diagrami (koraki vs. izboljsanje, LR vs. izboljsanje), tabela |
-| **Podrobnosti** | Metapodatki in hiperparametri posameznega eksperimenta |
-| **Mega-politike** | Statisticna primerjava 9 mega-politik z bazno linijo (100 ponovitev) |
+| **Jutranja / Vecerna konica** | Primerjava eksperimentov za posamezen scenarij: stolpcni diagram nagrad, izboljsanje % po eksperimentih |
+| **Krizisca** | Razdelitev po 5 kriziscih: nagrada in izboljsanje za vsako krizisce posebej |
+| **Ucenje** | Krivulje ucenja (nagrada skozi epizode) za izbrane eksperimente |
+| **Hiperparametri** | Razsevni diagrami (LR vs. izboljsanje, nagradna fn vs. izboljsanje) |
+| **Podrobnosti** | Metapodatki, hiperparametri in rezultati posameznega eksperimenta |
+| **Generalizacija** | 50-semeni statisticni testi:CI diagrami, box ploti, primerjava po kriziscih |
+| **Razlozljivost** | SHAP diagrami, odlocitvena drevesa in UMAP projekcije za najboljse modele |
 
-### Zavihek Mega-politike
+## Prihodnje izboljsave
 
-Zavihek se prikaze samodejno, ko obstajajo rezultati v `results/statistical-test/`. Vsebuje:
+Na podlagi rezultatov identificiramo vec smeri za nadaljnje delo:
 
-- **KPI kartice** — stevilo pogojev, najboljsa/najslabsa mega-politika, stevilo ponovitev, znacilnost
-- **Primerjava skupne nagrade** — stolpcni diagram z 95% intervali zaupanja
-- **3x3 toplotna karta** — jutranji model (M1-M3) x vecerni model (E1-E3), barvno kodirano, z zvezdicami znacilnosti (`*/**/***`)
-- **Primerjava po kriziscih** — skupinski stolpci za nagrado in izboljsanje po 5 kriziscih
-- **Primerjava po casovnih oknih** — skupinski stolpci za 6 casovnih oken
-- **Tabela statisticne znacilnosti** — Welchov t-test, Mann-Whitney U, Cohenov d, p-vrednosti
-- **Podrobnosti mega-politike** — per-krizisce in per-okno statistika za izbrano politiko
+### Arhitektura modela
 
-Statisticni testi se izracunajo v Pythonu (numpy, scipy) in vlozijo kot JSON v HTML.
+- **Loceni modeli po kriziscih** — trenutna deljena politika (en PPO model za 5 kriziscc) tezko optimizira vsa kriziscca hkrati (Askerceva se izboljsa, Trzaska in Kolodvor se poslabsata). Loceni modeli ali hierarhicna vecagentna arhitektura (npr. QMIX, MAPPO) bi omogocila krizisccu-specificne politike.
+- **Vecji model ali drugacna arhitektura** — privzeta 2-slojna MLP mreza (64 nevronov) je majhna. Vecja mreza ali arhitektura z mehanizmom pozornosti (attention) bi bolje zajela medkriziscne odvisnosti.
+- **Multi-objektna nagradna funkcija** — kombinacija cakalnih vrst, cakalnega casa in prepustnosti (throughput) namesto enojne metrike, z utezmi prilagojenimi po krizisccu.
 
-## Vizualizacija in demo
+### Ucenje in generalizacija
 
-Nacrt za pripravo koncne predstavitve za sodnike hackathona.
+- **Vec prometnih scenarijev** — ucenje na vec kot 50 naključnih poteh, vkljucno z nesrecami, zaprtji cest in posebnimi dogodki (tekme, koncerti).
+- **Realni prometni podatki** — uporaba indukcijskih zank ali kamer za kalibracijo SUMO simulatorja namesto sinteticnih poti iz randomTrips.
+- **Curriculum z narasccajocco tezavnostjo** — postopno poveccevanje prometne obremenitve od lahkih do konicnih scenarijev, namesto naključnega vzorccenja.
+- **Daljse ucenje** — trenutne politike so ucene z le 3 PPO posodobitvami (3200 epizod / 128 CPE). Vecje stevilo posodobitev bi morda omogoccilo konvergenco.
 
-### Rezultati in nadzorna plosca
-- [x] Zazeni eksperimente na HPC z razlicnimi nagradnimi funkcijami
-- [x] Prenesi rezultate iz Vege (`results/experiments/`)
-- [x] Generiraj nadzorno plosco: `python src/dashboard.py`
-- [x] Preveri zavihke: primerjava, krizisca, ucne krivulje, hiperparametri
-- [x] Zavihek Mega-politike za statisticno primerjavo
+### Simulacijsko okolje
 
-### Vizualizacija prometa
-- [ ] Zaženi najboljši model v SUMO GUI: `python src/evaluate.py --gui --model <pot_do_modela>.zip --scenario morning_rush`
-- [ ] Posnimi 30-sekundni video zaslona SUMO GUI kot rezervo (ffmpeg ali OBS)
-- [ ] Priprava toplotne karte prometnih čakalnih vrst (baseline vs. RL, po korakih)
+- **Vecje omrezje** — razsiritev z 5 na 15-20 kriziscc v sirsi okolici Bleiweisovega trikotnika za zajem kaskadnih uccinkov.
+- **Javni prevoz** — vkljuccitev prednostne obravnave avtobusov LPP (Slovenska cesta je ze avtobusom namenjena) in koordinacija z RL agenti.
+- **Pesci in kolesarji** — dodajanje pesccev in kolesarskih tokov v simulacijo za realisticcnejse fazne omejitve.
 
-### Razložljivost
-- [ ] Zberi stanja iz najboljšega modela: `python src/collect_states.py --model_path <pot>.zip --episodes 12`
-- [ ] Generiraj razlage: `python src/explain.py --data_path <pot>/harvested_data.pkl`
-- [ ] Preglej odločitvena drevesa: katera značilka (pas, faza, čas) poganja odločitve?
-- [ ] Preglej SHAP diagrame: ali agent "gleda" na prave pasove?
-- [ ] Preglej UMAP projekcije: ali se oblikujejo grozdi po urah / akcijah?
+### Produkcijska uvedba
 
-### Predstavitev
-- [ ] Kontekstna slika: `data/media/Observed_intersections.png` — 5 križišč na zemljevidu
-- [ ] Arhitekturni diagram: Mermaid diagram iz README-ja
-- [ ] Nadzorna plošča v živo: odpri `results/dashboard.html`, pokaži zavihke
-- [ ] Razložljivost: pokaži odločitveno drevo + UMAP projekcijo za najboljše križišče
-- [ ] SUMO GUI demo v živo ALI predposneti video
-- [ ] Zaključni diapozitiv: tabela scenarij x nagradna funkcija x izboljšanje %
-
-### Poročilo
-- [ ] Metodologija: IPPO z deljeno politiko, 5 križišč, SUMO simulator
-- [ ] Rezultati: tabele in grafi iz nadzorne plošče
-- [ ] Analiza: katera križišča se izboljšajo, katera ne, zakaj
-- [ ] Zaključek: primerjava nagradnih funkcij, priporočila za produkcijo
+- **Sim-to-real prenos** — preizkus nauccenega agenta na realnem krmilniku semaforjev (npr. z NTCIP protokolom) v nadzorovanem okolju.
+- **Robustnost na motnje** — testiranje obnasanja agenta ob izpadu senzorjev, komunikacijskih napakah ali neobicajnih prometnih vzorcih.
+- **Stalno ucenje (online RL)** — posodabljanje politike v realnem ccasu na podlagi dejanskih prometnih podatkov.
 
 ## Ekipa
 
