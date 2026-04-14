@@ -125,14 +125,18 @@ RUSH_TEST_DIR = "results/rush-test"
 
 # Model descriptions for megapolicy combinations (from HPC sweep results)
 MORNING_MODELS = {
-    "M1": "diff-waiting-time, lr=1e-3",
-    "M2": "pressure, lr=1e-3",
-    "M3": "queue, lr=3e-4",
+    "M1": "diff-waiting-time, lr=3e-3 (+5.2%)",
+    "M2": "diff-waiting-time, lr=1e-3 (+1.6%)",
+    "M3": "queue, lr=3e-3, ent. anneal (-1.4%)",
+    "M4": "diff-waiting-time, lr=3e-4 (-1.9%)",
+    "M5": "pressure, lr=3e-4, ent=0.02 (-2.7%)",
 }
 EVENING_MODELS = {
-    "E1": "pressure, lr=1e-3, ent. anneal",
-    "E2": "diff-waiting-time, lr=1e-3, ent. anneal",
-    "E3": "pressure, lr=3e-4, ent. anneal",
+    "E1": "diff-waiting-time, lr=1e-3 (+8.2%)",
+    "E2": "diff-waiting-time, lr=1e-3, ent. anneal (+7.5%)",
+    "E3": "diff-waiting-time, lr=1e-3 (+4.6%)",
+    "E4": "diff-waiting-time, lr=3e-4 (+2.5%)",
+    "E5": "diff-waiting-time, lr=1e-3 (+2.0%)",
 }
 
 WINDOW_LABELS = {
@@ -276,8 +280,8 @@ def load_megapolicy_results(base_dir=STATISTICAL_TEST_DIR):
         comparisons.append(comp)
 
     # 3x3 heatmap
-    m_keys = ["M1", "M2", "M3"]
-    e_keys = ["E1", "E2", "E3"]
+    m_keys = list(MORNING_MODELS.keys())
+    e_keys = list(EVENING_MODELS.keys())
     heatmap_values = []
     heatmap_pvalues = []
     heatmap_tags = []
@@ -346,12 +350,14 @@ def load_rush_test_results(base_dir=RUSH_TEST_DIR):
     expected = {
         "morning_rush": {
             "baseline": "baseline_morning",
-            "models": ["M1_morning", "M2_morning", "M3_morning"],
+            "models": ["M1_morning", "M2_morning", "M3_morning",
+                       "M4_morning", "M5_morning"],
             "label": "Jutranja konica (06:00-10:00)",
         },
         "evening_rush": {
             "baseline": "baseline_evening",
-            "models": ["E1_evening", "E2_evening", "E3_evening"],
+            "models": ["E1_evening", "E2_evening", "E3_evening",
+                       "E4_evening", "E5_evening"],
             "label": "Vecerna konica (14:00-18:00)",
         },
     }
