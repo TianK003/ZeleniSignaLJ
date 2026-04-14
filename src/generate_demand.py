@@ -628,11 +628,12 @@ def _generate_one_scenario_variant(args):
 
 
 def generate_scenario_variants(scenario_name, net_file, output_dir, num_variants=50,
-                               master_seed_stride=10000, num_workers=1):
+                               master_seed_stride=10000, num_workers=1,
+                               seed_offset=0):
     """Generate N route files with different random seeds for a single scenario.
 
-    Each file gets master_seed = seed_index * master_seed_stride, producing
-    completely different OD pairs while preserving the same demand curve.
+    Each file gets master_seed = seed_offset + seed_index * master_seed_stride,
+    producing completely different OD pairs while preserving the same demand curve.
 
     Args:
         scenario_name: One of "morning_rush", "evening_rush", "offpeak", "full_day"
@@ -641,6 +642,8 @@ def generate_scenario_variants(scenario_name, net_file, output_dir, num_variants
         num_variants: Number of route files to generate
         master_seed_stride: Spacing between master seeds (default 10000)
         num_workers: Number of parallel workers (default 1 = sequential)
+        seed_offset: Added to all master seeds (default 0). Use to generate
+                     non-overlapping route sets for train vs. validation.
 
     Returns:
         List of generated route file paths (ordered by seed index).
@@ -658,7 +661,7 @@ def generate_scenario_variants(scenario_name, net_file, output_dir, num_variants
 
     work_items = [
         (scenario_name, net_file, output_dir, seed_idx,
-         seed_idx * master_seed_stride, num_variants)
+         seed_offset + seed_idx * master_seed_stride, num_variants)
         for seed_idx in range(num_variants)
     ]
 
@@ -788,6 +791,10 @@ def main():
     # --scenario mode arguments
     parser.add_argument("--output_dir", type=str, default="data/routes",
                         help="Directory for generated route files (scenario mode)")
+    parser.add_argument("--seed_offset", type=int, default=0,
+                        help="Offset added to all master seeds. Use to ensure "
+                             "validation routes differ from training routes "
+                             "(e.g. --seed_offset 500000)")
     parser.add_argument("--num_workers", type=int, default=None,
                         help="Parallel workers for --statistical_routes / "
                              "--num_variants (default: auto-detect CPU count)")
@@ -820,6 +827,7 @@ def main():
                     scenario, args.net_file, args.output_dir,
                     num_variants=args.num_variants,
                     num_workers=args.num_workers,
+                    seed_offset=args.seed_offset,
                 )
             print(f"\nAll done. Route variants are in {args.output_dir}/")
             print("Next steps:")
