@@ -84,6 +84,9 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
     all_trips_files = []
     total_vehicles = 0
 
+    # Private temp dir to avoid /tmp collisions in parallel HPC runs
+    tmp_dir = tempfile.mkdtemp(prefix=f"sumo_uniform_{master_seed}_{os.getpid()}_")
+
     print(f"\nDemand profile ({len(bins)} intervals):")
     print(f"  {'Time':>10s}  {'Rate (veh/h)':>12s}  {'Vehicles':>10s}")
     print(f"  {'-'*38}")
@@ -102,7 +105,6 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
             t_min = begin / 60
             print(f"  {t_min:>7.0f}min  {rate * 3600:>12.0f}  {n_vehicles:>10d}")
 
-        tmp_dir = tempfile.gettempdir()
         tmp_trips = os.path.join(tmp_dir, f"trips_bin_{i}.trips.xml")
         route_tmp = os.path.join(tmp_dir, f"routes_bin_{i}.rou.xml")
         all_trips_files.append(tmp_trips)
@@ -142,6 +144,9 @@ def write_demand_xml(bins, net_file, output_trips, output_routes, fringe_factor=
                         out.write(f"    {line_s}\n")
             os.remove(tf)
         out.write('</trips>\n')
+
+    # Clean up private temp dir
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # Route with DUAROUTER
     print("  Running DUAROUTER to compute routes...")
@@ -244,7 +249,8 @@ def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offse
         print("Set SUMO_HOME correctly, e.g.: export SUMO_HOME=/usr/share/sumo")
         sys.exit(1)
 
-    tmp_dir = tempfile.gettempdir()
+    # Use a private temp dir per call to avoid /tmp collisions in parallel HPC runs
+    tmp_dir = tempfile.mkdtemp(prefix=f"sumo_trips_{master_seed}_{os.getpid()}_")
     all_tmp = []
     total = 0
 
@@ -293,6 +299,9 @@ def _generate_trips_only(bins, net_file, output_trips, fringe_factor, seed_offse
                         out.write(f"    {line_s}\n")
             os.remove(tf)
         out.write("</trips>\n")
+
+    # Clean up private temp dir
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return total
 
@@ -406,8 +415,8 @@ def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suf
         else:
             offpeak_bins.append((b, e, rate))
 
-    tmp_dir = tempfile.gettempdir()
-    # Use a unique tag per seed so parallel workers don't collide on temp files.
+    # Private temp dir per worker to avoid /tmp collisions on HPC
+    tmp_dir = tempfile.mkdtemp(prefix=f"sumo_fullday_{master_seed}_{os.getpid()}_")
     tag = output_suffix if output_suffix else f"ms{master_seed}"
     all_trip_files = []
     total_vehicles = 0
@@ -488,7 +497,9 @@ def _generate_full_day_scenario(net_file, output_dir, master_seed=42, output_suf
         f.write("</trips>\n")
 
     _route_trips(merged_trips, net_file, output_trips, output_routes)
-    os.remove(merged_trips)
+
+    # Clean up private temp dir
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
     print(f"\n  Done: {total_vehicles} vehicles -> {output_routes}")
     return output_routes
@@ -560,7 +571,8 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
         inbound_bins = _volume_split(full_bins, inbound_frac)
         outbound_bins = _volume_split(full_bins, outbound_frac)
 
-        tmp_dir = tempfile.gettempdir()
+        # Private temp dir per worker to avoid /tmp collisions on HPC
+        tmp_dir = tempfile.mkdtemp(prefix=f"sumo_scenario_{master_seed}_{os.getpid()}_")
         trips_inbound = os.path.join(tmp_dir, f"trips_{scenario_name}_in_{tag}.trips.xml")
         trips_outbound = os.path.join(tmp_dir, f"trips_{scenario_name}_out_{tag}.trips.xml")
         trips_merged = os.path.join(tmp_dir, f"trips_{scenario_name}_merged_{tag}.trips.xml")
@@ -593,10 +605,8 @@ def generate_scenario(scenario_name, net_file, output_dir, master_seed=42, outpu
         # Count total vehicles
         total = _count_trips(trips_merged)
 
-        # Clean up temp files
-        for f in (trips_inbound, trips_outbound, trips_merged):
-            if os.path.exists(f):
-                os.remove(f)
+        # Clean up private temp dir
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     print(f"\n  Done: {total} vehicles -> {output_routes}")
     return output_routes
