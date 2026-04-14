@@ -4,7 +4,7 @@
 
 Arnes HackathON 2026 | Ekipa Ransomware
 
-[![DOI](https://zenodo.org/badge/1202274690.svg)](https://doi.org/10.5281/zenodo.19462105)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19582380.svg)](https://doi.org/10.5281/zenodo.19582380)
 
 ## Pregled
 
