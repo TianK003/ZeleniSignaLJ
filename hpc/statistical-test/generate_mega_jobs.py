@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate SLURM scripts for 9 mega-policy + 1 baseline statistical tests.
+Generate SLURM scripts for 25 mega-policy + 1 baseline statistical tests.
 
 Two-phase pipeline:
   1. gen_routes.slurm — generate 50 per-seed route files
@@ -22,31 +22,47 @@ ROUTE_DIR = "data/routes/statistical-test"
 
 MORNING_MODELS = {
     "M1": {
-        "path": "results/experiments/20260408_235440_morningrush_diffwaitingtime_lr1e3_200ep/ppo_shared_policy.zip",
-        "desc": "diff-waiting-time, lr=1e-3 (+18.2%)",
+        "path": "results/experiments/20260413_005856_66186092_morningrush_diffwaitingtime_lr3e3_1600ep/ppo_shared_policy.zip",
+        "desc": "diff-waiting-time, lr=3e-3 (+5.2%)",
     },
     "M2": {
-        "path": "results/experiments/20260409_000353_morningrush_pressure_lr1e3_200ep/ppo_shared_policy.zip",
-        "desc": "pressure, lr=1e-3 (+17.2%)",
+        "path": "results/experiments/20260413_005828_66186002_morningrush_diffwaitingtime_lr1e3_3200ep/ppo_shared_policy.zip",
+        "desc": "diff-waiting-time, lr=1e-3 (+1.6%)",
     },
     "M3": {
-        "path": "results/experiments/20260408_235311_morningrush_default_lr3e4_200ep/ppo_shared_policy.zip",
-        "desc": "queue (default), lr=3e-4 (+17.1%)",
+        "path": "results/experiments/20260413_005819_66185977_morningrush_queue_lr3e3_entanneal_4800ep/ppo_shared_policy.zip",
+        "desc": "queue, lr=3e-3, entropy annealing (-1.4%)",
+    },
+    "M4": {
+        "path": "results/experiments/20260413_005844_66186050_morningrush_diffwaitingtime_lr3e4_2400ep/ppo_shared_policy.zip",
+        "desc": "diff-waiting-time, lr=3e-4 (-1.9%)",
+    },
+    "M5": {
+        "path": "results/experiments/20260413_003935_66185886_morningrush_pressure_lr3e4_ent002_4800ep/ppo_shared_policy.zip",
+        "desc": "pressure, lr=3e-4, ent_coef=0.02 (-2.7%)",
     },
 }
 
 EVENING_MODELS = {
     "E1": {
-        "path": "results/experiments/20260408_235311_eveningrush_pressure_lr1e3_entanneal_200ep/ppo_shared_policy.zip",
-        "desc": "pressure, lr=1e-3, entropy annealing (+15.1%)",
+        "path": "results/experiments/20260413_005825_66185980_eveningrush_diffwaitingtime_lr1e3_3200ep/ppo_shared_policy.zip",
+        "desc": "diff-waiting-time, lr=1e-3 (+8.2%)",
     },
     "E2": {
-        "path": "results/experiments/20260408_235311_eveningrush_diffwaitingtime_lr1e3_entanneal_200ep/ppo_shared_policy.zip",
-        "desc": "diff-waiting-time, lr=1e-3, entropy annealing (+15.0%)",
+        "path": "results/experiments/20260413_005825_66185981_eveningrush_diffwaitingtime_lr1e3_entanneal_3200ep/ppo_shared_policy.zip",
+        "desc": "diff-waiting-time, lr=1e-3, entropy annealing (+7.5%)",
     },
     "E3": {
-        "path": "results/experiments/20260408_235311_eveningrush_pressure_lr3e4_entanneal_200ep/ppo_shared_policy.zip",
-        "desc": "pressure, lr=3e-4, entropy annealing (+12.9%)",
+        "path": "results/experiments/20260413_003932_66185851_eveningrush_diffwaitingtime_lr1e3_4800ep/ppo_shared_policy.zip",
+        "desc": "diff-waiting-time, lr=1e-3 (+4.6%)",
+    },
+    "E4": {
+        "path": "results/experiments/20260413_005816_66185940_eveningrush_diffwaitingtime_lr3e4_4800ep/ppo_shared_policy.zip",
+        "desc": "diff-waiting-time, lr=3e-4 (+2.5%)",
+    },
+    "E5": {
+        "path": "results/experiments/20260413_005903_66186112_eveningrush_diffwaitingtime_lr1e3_800ep/ppo_shared_policy.zip",
+        "desc": "diff-waiting-time, lr=1e-3 (+2.0%)",
     },
 }
 

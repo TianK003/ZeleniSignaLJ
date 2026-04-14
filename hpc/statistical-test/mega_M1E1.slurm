@@ -1,6 +1,6 @@
 #!/bin/bash
 # Zeleni SignaLJ - 24h Mega-Policy Statistical Test: M1E1
-# Morning: diff-waiting-time, lr=1e-3 (+18.2%) | Evening: pressure, lr=1e-3, entropy annealing (+15.1%)
+# Morning: diff-waiting-time, lr=3e-3 (+5.2%) | Evening: diff-waiting-time, lr=1e-3 (+8.2%)
 #SBATCH --job-name=zs_mega_M1E1
 #SBATCH --output=logs/mega_M1E1_%j.out
 #SBATCH --error=logs/mega_M1E1_%j.err
@@ -14,13 +14,13 @@
 source hpc/common.sh
 
 echo "Starting 24h statistical test: M1E1"
-echo "  Morning model: diff-waiting-time, lr=1e-3 (+18.2%)"
-echo "  Evening model: pressure, lr=1e-3, entropy annealing (+15.1%)"
+echo "  Morning model: diff-waiting-time, lr=3e-3 (+5.2%)"
+echo "  Evening model: diff-waiting-time, lr=1e-3 (+8.2%)"
 echo "  Runs: 50 | Workers: 50 | Per-seed routes: yes"
 
 srun python src/run_24h.py \
-    --model_morning results/experiments/20260408_235440_morningrush_diffwaitingtime_lr1e3_200ep/ppo_shared_policy.zip \
-    --model_evening results/experiments/20260408_235311_eveningrush_pressure_lr1e3_entanneal_200ep/ppo_shared_policy.zip \
+    --model_morning results/experiments/20260413_005856_66186092_morningrush_diffwaitingtime_lr3e3_1600ep/ppo_shared_policy.zip \
+    --model_evening results/experiments/20260413_005825_66185980_eveningrush_diffwaitingtime_lr1e3_3200ep/ppo_shared_policy.zip \
     \
     --route_dir data/routes/statistical-test \
     --num_runs 50 \

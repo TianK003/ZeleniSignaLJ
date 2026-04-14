@@ -8,7 +8,7 @@
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=50
 #SBATCH --mem=96G
 
 source hpc/common.sh
@@ -22,7 +22,7 @@ srun python src/run_rush_test.py \
     --baseline \
     \
     --scenario morning_rush \
-    --route_dir data/routes/rush-test-morning \
+    --route_dir data/routes/statistical-morning-test \
     --num_runs 50 \
     --num_workers 50 \
     --output_dir results/rush-test/baseline_morning \

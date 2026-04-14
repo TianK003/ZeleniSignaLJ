@@ -42,12 +42,20 @@ JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_M2_morning.slurm)
 echo "  Submitted rush_M2_morning.slurm (job $JID)"
 JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_M3_morning.slurm)
 echo "  Submitted rush_M3_morning.slurm (job $JID)"
+JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_M4_morning.slurm)
+echo "  Submitted rush_M4_morning.slurm (job $JID)"
+JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_M5_morning.slurm)
+echo "  Submitted rush_M5_morning.slurm (job $JID)"
 JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_E1_evening.slurm)
 echo "  Submitted rush_E1_evening.slurm (job $JID)"
 JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_E2_evening.slurm)
 echo "  Submitted rush_E2_evening.slurm (job $JID)"
 JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_E3_evening.slurm)
 echo "  Submitted rush_E3_evening.slurm (job $JID)"
+JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_E4_evening.slurm)
+echo "  Submitted rush_E4_evening.slurm (job $JID)"
+JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_E5_evening.slurm)
+echo "  Submitted rush_E5_evening.slurm (job $JID)"
 JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_baseline_morning.slurm)
 echo "  Submitted rush_baseline_morning.slurm (job $JID)"
 JID=$(sbatch --parsable $DEP_FLAG hpc/statistical-test/rush_baseline_evening.slurm)

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Zeleni SignaLJ - Rush-Hour Generalization Test: E1_evening
-# Evening model E1: pressure, lr=1e-3, entropy annealing (+15.1%)
+# Evening model E1: diff-waiting-time, lr=1e-3 (+8.2%)
 #SBATCH --job-name=zs_rush_E1_evening
 #SBATCH --output=logs/rush_E1_evening_%j.out
 #SBATCH --error=logs/rush_E1_evening_%j.err
@@ -8,21 +8,21 @@
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=50
 #SBATCH --mem=96G
 
 source hpc/common.sh
 
 echo "Starting rush-hour generalization test: E1_evening"
 echo "  Scenario: evening_rush"
-echo "  Model: pressure, lr=1e-3, entropy annealing (+15.1%)"
+echo "  Model: diff-waiting-time, lr=1e-3 (+8.2%)"
 echo "  Runs: 50 | Workers: 50"
 
 srun python src/run_rush_test.py \
-    --model results/experiments/20260408_235311_eveningrush_pressure_lr1e3_entanneal_200ep/ppo_shared_policy.zip \
+    --model results/experiments/20260413_005825_66185980_eveningrush_diffwaitingtime_lr1e3_3200ep/ppo_shared_policy.zip \
     \
     --scenario evening_rush \
-    --route_dir data/routes/rush-test-evening \
+    --route_dir data/routes/statistical-evening-test \
     --num_runs 50 \
     --num_workers 50 \
     --output_dir results/rush-test/E1_evening \

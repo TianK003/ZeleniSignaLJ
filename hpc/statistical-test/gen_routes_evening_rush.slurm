@@ -7,18 +7,18 @@
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=50
 #SBATCH --mem=64G
 
 source hpc/common.sh
 
 echo "Generating 50 evening_rush route variants..."
-echo "  Output: data/routes/rush-test-evening/"
+echo "  Output: data/routes/statistical-evening-test/"
 
 # --num_workers auto-detects from cpus-per-task (64 -> all 50 in parallel)
 srun python src/generate_demand.py \
     --scenario evening_rush \
     --num_variants 50 \
-    --output_dir data/routes/rush-test-evening
+    --output_dir data/routes/statistical-evening-test
 
-echo "Done. Route files in data/routes/rush-test-evening/"
+echo "Done. Route files in data/routes/statistical-evening-test/"

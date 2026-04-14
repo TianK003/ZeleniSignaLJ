@@ -26,8 +26,8 @@ sys.path.insert(0, SCRIPT_DIR)
 from generate_mega_jobs import MORNING_MODELS, EVENING_MODELS
 
 # Output directories
-MORNING_ROUTE_DIR = "data/routes/rush-test-morning"
-EVENING_ROUTE_DIR = "data/routes/rush-test-evening"
+MORNING_ROUTE_DIR = "data/routes/statistical-morning-test"
+EVENING_ROUTE_DIR = "data/routes/statistical-evening-test"
 RESULTS_BASE = "results/rush-test"
 
 # ── SLURM templates ──────────────────────────────────────────────────────
@@ -42,7 +42,7 @@ ROUTE_GEN_TEMPLATE = """\
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=50
 #SBATCH --mem=64G
 
 source hpc/common.sh
@@ -70,7 +70,7 @@ RUSH_TEST_TEMPLATE = """\
 #SBATCH --partition=all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=50
 #SBATCH --mem=96G
 
 source hpc/common.sh
