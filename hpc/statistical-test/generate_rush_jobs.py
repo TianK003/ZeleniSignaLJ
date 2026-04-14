@@ -26,8 +26,8 @@ sys.path.insert(0, SCRIPT_DIR)
 from generate_mega_jobs import MORNING_MODELS, EVENING_MODELS
 
 # Output directories
-MORNING_ROUTE_DIR = "data/routes/statistical-morning-test"
-EVENING_ROUTE_DIR = "data/routes/statistical-evening-test"
+MORNING_ROUTE_DIR = "data/routes/statistical-morning-rush"
+EVENING_ROUTE_DIR = "data/routes/statistical-evening-rush"
 RESULTS_BASE = "results/rush-test"
 
 # ── SLURM templates ──────────────────────────────────────────────────────

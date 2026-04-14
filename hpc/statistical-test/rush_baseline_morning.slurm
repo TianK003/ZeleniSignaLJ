@@ -22,7 +22,7 @@ srun python src/run_rush_test.py \
     --baseline \
     \
     --scenario morning_rush \
-    --route_dir data/routes/statistical-morning-test \
+    --route_dir data/routes/statistical-morning-rush \
     --num_runs 50 \
     --num_workers 50 \
     --output_dir results/rush-test/baseline_morning \

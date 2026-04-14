@@ -22,7 +22,7 @@ srun python src/run_rush_test.py \
     --baseline \
     \
     --scenario evening_rush \
-    --route_dir data/routes/statistical-evening-test \
+    --route_dir data/routes/statistical-evening-rush \
     --num_runs 50 \
     --num_workers 50 \
     --output_dir results/rush-test/baseline_evening \

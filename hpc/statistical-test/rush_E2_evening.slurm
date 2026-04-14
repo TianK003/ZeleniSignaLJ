@@ -22,7 +22,7 @@ srun python src/run_rush_test.py \
     --model results/experiments/20260413_005825_66185981_eveningrush_diffwaitingtime_lr1e3_entanneal_3200ep/ppo_shared_policy.zip \
     \
     --scenario evening_rush \
-    --route_dir data/routes/statistical-evening-test \
+    --route_dir data/routes/statistical-evening-rush \
     --num_runs 50 \
     --num_workers 50 \
     --output_dir results/rush-test/E2_evening \

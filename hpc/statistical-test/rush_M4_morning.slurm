@@ -22,7 +22,7 @@ srun python src/run_rush_test.py \
     --model results/experiments/20260413_005844_66186050_morningrush_diffwaitingtime_lr3e4_2400ep/ppo_shared_policy.zip \
     \
     --scenario morning_rush \
-    --route_dir data/routes/statistical-morning-test \
+    --route_dir data/routes/statistical-morning-rush \
     --num_runs 50 \
     --num_workers 50 \
     --output_dir results/rush-test/M4_morning \

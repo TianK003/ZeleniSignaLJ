@@ -13,12 +13,13 @@
 source hpc/common.sh
 
 echo "Generating 50 evening_rush route variants..."
-echo "  Output: data/routes/statistical-evening-test/"
+echo "  Output: data/routes/statistical-evening-rush/"
 
 # --num_workers auto-detects from cpus-per-task (64 -> all 50 in parallel)
 srun python src/generate_demand.py \
     --scenario evening_rush \
     --num_variants 50 \
-    --output_dir data/routes/statistical-evening-test
+    --seed_offset 500000 \
+    --output_dir data/routes/statistical-evening-rush
 
-echo "Done. Route files in data/routes/statistical-evening-test/"
+echo "Done. Route files in data/routes/statistical-evening-rush/"
